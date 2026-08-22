@@ -1,0 +1,17 @@
+# render.yaml
+services:
+  - type: web
+    name: turismo-api
+    runtime: php
+    buildCommand: composer install --no-dev
+    startCommand: php -S 0.0.0.0:$PORT -t .
+    envVars:
+      - key: PDO_HOST
+        value: localhost
+      - key: PDO_DATABASE
+        value: app_turistica_la_paz
+      - key: PDO_USERNAME
+        value: root
+      - key: PDO_PASSWORD
+        value: ''
+    plan: free
