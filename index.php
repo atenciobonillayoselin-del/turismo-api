@@ -15,6 +15,7 @@ echo json_encode([
         'perfil_usuario' => '/api/perfil_usuario.php',
         'lugares' => '/api/lugares.php',
         'rutas' => '/api/rutas.php',
+        'sincronizar' => '/api/sincronizar.php',
     ]
 ]);
 ?>

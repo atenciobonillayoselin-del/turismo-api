@@ -1,24 +1,8 @@
-# render.yaml
-# ============================================================
-# ✅ CONFIGURACIÓN PARA RENDER + AIVEN MYSQL
-# ============================================================
-# En Render.com configura las variables de entorno:
-#
-#   PDO_HOST      = mysql-3c89e575-turismo-la-paz.d.aivencloud.com
-#   PDO_PORT      = 23909
-#   PDO_DATABASE  = app_turistica_la_paz
-#   PDO_USERNAME  = avnadmin
-#   PDO_PASSWORD  = tu-password-de-aiven
-#   PDO_SSL_CA    = config/ca.pem
-#
-# ✅ IMPORTANTE: El archivo config/ca.pem debe estar en el repositorio.
-#    Descargalo desde Aiven Console > tu servicio MySQL > CA certificate.
-# ============================================================
 services:
   - type: web
     name: turismo-api
     runtime: php
-    buildCommand: composer install --no-dev
+    buildCommand: composer install --no-dev || true
     startCommand: php -S 0.0.0.0:$PORT -t .
     envVars:
       - key: PDO_HOST

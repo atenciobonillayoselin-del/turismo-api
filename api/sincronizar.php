@@ -1,127 +1,145 @@
 <?php
 // api/sincronizar.php
+// ✅ FUENTE: uMap (https://umap.openstreetmap.fr)
+// ✅ Ya no usa KML/Google Drive
+
 require_once '../config/database.php';
 
 header('Content-Type: application/json');
+header('Access-Control-Allow-Origin: *');
 
-try {
-    $kmlUrl = 'https://drive.google.com/uc?export=download&id=13SoAxhs7sP-GIW-SKdfVRv_186C6Lj7r';
+function logDebug($msg) {
+    error_log("[sincronizar] " . $msg);
+}
+
+logDebug("=== INICIO SINCRONIZACIÓN uMap ===");
+
+// ============================================================
+// CONFIGURACIÓN DE uMap
+// ============================================================
+const UMAP_ID = '1447967';
+const UMAP_BASE = 'https://umap.openstreetmap.fr/en/datalayer/';
+
+// Capas que se descargan desde uMap
+const DATALAYER_IDS = [
+    '0a5a5bfc-8c95-4fea-8400-3a8438a2b533', // Minibus 364 - IDA
+    '291c212e-44db-4460-b84e-773bcfede107', // Minibus 364 - VUELTA
+    // Agrega más capas aquí cuando las crees en uMap
+];
+
+// ============================================================
+// FUNCIÓN: DESCARGAR GEOJSON DESDE uMap
+// ============================================================
+function descargarGeoJSON($datalayerId) {
+    $url = UMAP_BASE . UMAP_ID . '/' . $datalayerId . '/';
+    logDebug("📥 Descargando: $url");
     
     $ch = curl_init();
-    curl_setopt($ch, CURLOPT_URL, $kmlUrl);
+    curl_setopt($ch, CURLOPT_URL, $url);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
     curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false);
     curl_setopt($ch, CURLOPT_USERAGENT, 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
-    $kmlReal = curl_exec($ch);
+    curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+    
+    $response = curl_exec($ch);
     $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
     
-    if ($httpCode !== 200 || $kmlReal === false) {
-        throw new Exception('No se pudo descargar el KML. Código: ' . $httpCode);
+    if ($httpCode !== 200 || $response === false) {
+        logDebug("❌ Error HTTP $httpCode en capa $datalayerId");
+        return null;
     }
     
-    // ===== 1. OBTENER TODAS LAS CARPETAS CON SU CONTENIDO =====
-    preg_match_all('/<Folder>.*?<name>(.*?)<\/name>(.*?)<\/Folder>/s', $kmlReal, $folders);
+    $data = json_decode($response, true);
+    if (!$data || !isset($data['features'])) {
+        logDebug("❌ GeoJSON inválido para capa $datalayerId");
+        return null;
+    }
     
+    logDebug("✅ Capa descargada: " . count($data['features']) . " features");
+    return $data;
+}
+
+// ============================================================
+// FUNCIÓN: PROCESAR FEATURECOLLECTION
+// ============================================================
+function procesarFeatureCollection($geoJSON, $nombreCapa) {
     $rutas = [];
-    $nombresVistos = [];
+    $features = $geoJSON['features'] ?? [];
     
-    // ===== LISTA DE RUTAS QUE SIEMPRE DEBEN GUARDARSE =====
-    $rutasObligatorias = [
-        'Minibus 394 - Laguna de cota cota ida',
-        'Minibus 394 - Laguna de cota cota vuelta',
-        'minibus 349 - plaza murillo ida',
-        'minibus 349 - plaza murillo vuelta',
-        'Minibus 820 - Calle Jaén ida',
-        'Minibus 820 - Calle Jaén devuelta',  // ¡Esta es la que falta!
-        'minibus 240 - san francisco ida',
-        'minibus 240 - san francisco vuelta',
-        'Minibus 308 - san pedro ida'
-    ];
-    
-    foreach ($folders[1] as $index => $nombreCarpeta) {
-        $nombre = trim($nombreCarpeta);
-        $contenido = $folders[2][$index];
+    foreach ($features as $feature) {
+        $geometry = $feature['geometry'] ?? null;
+        $properties = $feature['properties'] ?? [];
+        $featureName = trim($properties['name'] ?? $nombreCapa);
         
-        // Buscar si dentro de la carpeta hay un LineString
-        if (strpos($contenido, '<LineString>') !== false) {
-            // Extraer coordenadas
-            preg_match('/<coordinates>(.*?)<\/coordinates>/s', $contenido, $coordMatch);
+        if (!$geometry || !isset($geometry['type'])) continue;
+        
+        if ($geometry['type'] === 'LineString') {
+            // ── RUTA ──
+            $coords = $geometry['coordinates'] ?? [];
+            if (count($coords) < 2) continue;
             
-            if (!empty($coordMatch[1])) {
-                $coordsText = trim($coordMatch[1]);
-                $puntos = explode(' ', $coordsText);
-                $coordenadas = [];
-                
-                foreach ($puntos as $punto) {
-                    $coord = explode(',', trim($punto));
-                    if (count($coord) >= 2) {
-                        $coordenadas[] = [
-                            'lat' => floatval($coord[1]),
-                            'lng' => floatval($coord[0])
-                        ];
-                    }
-                }
-                
-                // ===== 1. VERIFICAR SI ESTÁ EN LA LISTA OBLIGATORIA =====
-                $esObligatoria = in_array($nombre, $rutasObligatorias);
-                
-                // ===== 2. VERIFICAR POR PALABRAS CLAVE (solo si no es dirección) =====
-                $tienePalabraClave = (
-                    strpos(strtolower($nombre), 'minibus') !== false ||
-                    strpos(strtolower($nombre), 'micro') !== false ||
-                    strpos(strtolower($nombre), 'ida') !== false ||
-                    strpos(strtolower($nombre), 'vuelta') !== false ||
-                    strpos(strtolower($nombre), 'devuelta') !== false ||
-                    strpos(strtolower($nombre), 'san francisco') !== false ||
-                    strpos(strtolower($nombre), 'san pedro') !== false ||
-                    strpos(strtolower($nombre), 'plaza murillo') !== false ||
-                    strpos(strtolower($nombre), 'laguna de cota cota') !== false
-                );
-                
-                // ===== 3. VERIFICAR SI ES DIRECCIÓN =====
-                $esDireccion = (
-                    preg_match('/^[A-Z]{4}\+[A-Z0-9]{2,4}/', $nombre) ||
-                    strpos($nombre, 'GVGJ') !== false ||
-                    strpos($nombre, 'GR2R') !== false ||
-                    strpos($nombre, 'GVCC') !== false ||
-                    strpos($nombre, 'FRWQ') !== false ||
-                    strpos($nombre, 'C. Soldado') !== false ||
-                    strpos($nombre, 'Plaza del Maestro') !== false
-                );
-                
-                // ===== GUARDAR SI ES OBLIGATORIA O (TIENE PALABRA CLAVE Y NO ES DIRECCIÓN) =====
-                $esValida = $esObligatoria || ($tienePalabraClave && !$esDireccion);
-                
-                if ($esValida && count($coordenadas) > 0 && !in_array($nombre, $nombresVistos)) {
-                    $nombresVistos[] = $nombre;
-                    $rutas[] = [
-                        'nombre' => $nombre,
-                        'coordenadas' => $coordenadas
+            $puntos = [];
+            foreach ($coords as $coord) {
+                if (count($coord) >= 2) {
+                    $puntos[] = [
+                        'lat' => (float)$coord[1],
+                        'lng' => (float)$coord[0]
                     ];
                 }
+            }
+            
+            if (count($puntos) > 0) {
+                $rutas[] = [
+                    'nombre' => $featureName,
+                    'coordenadas' => $puntos
+                ];
+                logDebug("  🗺️ Ruta: $featureName (" . count($puntos) . " puntos)");
             }
         }
     }
     
-    // ===== LIMPIAR DATOS ANTERIORES =====
+    return $rutas;
+}
+
+// ============================================================
+// FUNCIÓN: GUARDAR EN BASE DE DATOS
+// ============================================================
+function guardarRutas($rutas, $pdo) {
+    $rutasAgregadas = 0;
+    $paradasAgregadas = 0;
+    $paradasActualizadas = 0;
+    
+    // Limpiar datos anteriores de estas rutas específicas
     $pdo->exec("DELETE FROM ruta_parada");
     $pdo->exec("DELETE FROM ruta");
     
-    // ===== Guardar en la base de datos =====
-    $rutasAgregadas = 0;
-    $paradasAgregadas = 0;
-    
     foreach ($rutas as $ruta) {
-        $sql = "INSERT INTO ruta (nombre, tipo, color_hex) VALUES (:nombre, 'minibus', '#E74C3C')";
+        $nombre = $ruta['nombre'];
+        
+        // Verificar si es IDA o VUELTA para el color
+        $color = (stripos($nombre, 'vuelta') !== false || stripos($nombre, 'devuelta') !== false) 
+            ? '#2980B9' 
+            : '#E74C3C';
+        
+        // INSERTAR RUTA
+        $sql = "INSERT INTO ruta (nombre, tipo, color_hex, activo) 
+                VALUES (:nombre, 'minibus', :color, 1)";
         $stmt = $pdo->prepare($sql);
-        $stmt->execute([':nombre' => $ruta['nombre']]);
+        $stmt->execute([
+            ':nombre' => $nombre,
+            ':color' => $color
+        ]);
         $idRuta = $pdo->lastInsertId();
         $rutasAgregadas++;
         
+        // INSERTAR PARADAS
         $orden = 1;
+        $totalPuntos = count($ruta['coordenadas']);
+        
         foreach ($ruta['coordenadas'] as $punto) {
+            // Buscar si la parada ya existe (por coordenadas)
             $checkSql = "SELECT id_parada FROM parada 
                          WHERE ABS(latitud - :lat) < 0.000001 
                          AND ABS(longitud - :lng) < 0.000001";
@@ -134,12 +152,13 @@ try {
             
             if ($paradaExistente) {
                 $idParada = $paradaExistente['id_parada'];
+                $paradasActualizadas++;
             } else {
-                $sqlParada = "INSERT INTO parada (nombre, latitud, longitud) 
-                              VALUES (:nombre, :lat, :lng)";
+                $sqlParada = "INSERT INTO parada (nombre, latitud, longitud, activo) 
+                              VALUES (:nombre, :lat, :lng, 1)";
                 $stmtParada = $pdo->prepare($sqlParada);
                 $stmtParada->execute([
-                    ':nombre' => 'Punto ' . $orden . ' de ' . $ruta['nombre'],
+                    ':nombre' => 'Punto ' . $orden . ' de ' . $nombre,
                     ':lat' => $punto['lat'],
                     ':lng' => $punto['lng']
                 ]);
@@ -147,6 +166,7 @@ try {
                 $paradasAgregadas++;
             }
             
+            // Relacionar ruta con parada
             $sqlRp = "INSERT INTO ruta_parada (id_ruta, id_parada, orden, es_inicio, es_fin) 
                       VALUES (:id_ruta, :id_parada, :orden, :inicio, :fin)";
             $stmtRp = $pdo->prepare($sqlRp);
@@ -155,24 +175,62 @@ try {
                 ':id_parada' => $idParada,
                 ':orden' => $orden,
                 ':inicio' => ($orden == 1) ? 1 : 0,
-                ':fin' => ($orden == count($ruta['coordenadas'])) ? 1 : 0
+                ':fin' => ($orden == $totalPuntos) ? 1 : 0
             ]);
             $orden++;
         }
     }
     
-    echo json_encode([
-        'success' => true,
+    return [
         'rutas_agregadas' => $rutasAgregadas,
         'paradas_agregadas' => $paradasAgregadas,
-        'mensaje' => 'Sincronización completada',
+        'paradas_actualizadas' => $paradasActualizadas
+    ];
+}
+
+// ============================================================
+// EJECUCIÓN PRINCIPAL
+// ============================================================
+try {
+    $todasLasRutas = [];
+    $errores = [];
+    
+    foreach (DATALAYER_IDS as $datalayerId) {
+        $geoJSON = descargarGeoJSON($datalayerId);
+        if ($geoJSON === null) {
+            $errores[] = "No se pudo descargar capa: $datalayerId";
+            continue;
+        }
+        
+        $rutas = procesarFeatureCollection($geoJSON, "Capa $datalayerId");
+        $todasLasRutas = array_merge($todasLasRutas, $rutas);
+    }
+    
+    if (empty($todasLasRutas)) {
+        throw new Exception('No se encontraron rutas en las capas de uMap');
+    }
+    
+    $resultado = guardarRutas($todasLasRutas, $pdo);
+    
+    $response = [
+        'success' => true,
+        'rutas_agregadas' => $resultado['rutas_agregadas'],
+        'paradas_agregadas' => $resultado['paradas_agregadas'],
+        'paradas_actualizadas' => $resultado['paradas_actualizadas'],
+        'mensaje' => 'Sincronización uMap completada exitosamente',
         'debug' => [
-            'rutas_encontradas' => count($rutas),
-            'rutas_nombres' => array_column($rutas, 'nombre')
+            'capas_procesadas' => count(DATALAYER_IDS),
+            'rutas_encontradas' => count($todasLasRutas),
+            'nombres_rutas' => array_column($todasLasRutas, 'nombre'),
+            'errores' => $errores
         ]
-    ]);
+    ];
+    
+    logDebug("✅ Sincronización completada: " . json_encode($response));
+    echo json_encode($response);
     
 } catch (Exception $e) {
+    logDebug("❌ Error: " . $e->getMessage());
     echo json_encode([
         'success' => false,
         'error' => $e->getMessage()

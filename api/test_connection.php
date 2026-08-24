@@ -39,6 +39,16 @@ try {
             $result['checks'][] = "❌ Tabla usuario NO existe";
             $result['success'] = false;
         }
+        
+        // Verificar rutas
+        $stmt = $pdo->query("SELECT COUNT(*) as total FROM ruta");
+        $totalRutas = $stmt->fetch()['total'];
+        $result['checks'][] = "📊 Total de rutas en MySQL: $totalRutas";
+        
+        $stmt = $pdo->query("SELECT COUNT(*) as total FROM parada");
+        $totalParadas = $stmt->fetch()['total'];
+        $result['checks'][] = "📊 Total de paradas en MySQL: $totalParadas";
+        
     } else {
         $result['checks'][] = "❌ Base de datos app_turistica_la_paz NO existe";
         $result['success'] = false;

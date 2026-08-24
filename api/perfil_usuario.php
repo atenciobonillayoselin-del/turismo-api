@@ -50,7 +50,7 @@ try {
                 'nombre' => $usuario['nombre'],
                 'rol' => $usuario['rol'],
                 'firebase_uid' => $usuario['firebase_uid'],
-                'foto_perfil' => $usuario['foto_perfil'],
+                'foto_perfil' => $usuario['foto_perfil'] ?? '',
                 'telefono' => $usuario['telefono'] ?? '',
                 'carnet' => $usuario['carnet'] ?? '',
                 'perfil_completo' => (int)($usuario['perfil_completo'] ?? 0)
@@ -61,8 +61,6 @@ try {
     }
 
 } catch (PDOException $e) {
-    echo json_encode(['success' => false, 'error' => 'Error en la base de datos: ' . $e->getMessage()]);
-} catch (Exception $e) {
-    echo json_encode(['success' => false, 'error' => 'Error: ' . $e->getMessage()]);
+    echo json_encode(['success' => false, 'error' => 'Error en BD: ' . $e->getMessage()]);
 }
 ?>
