@@ -24,11 +24,11 @@ switch($method) {
 
 function obtenerLugares($pdo) {
     try {
-        $stmt = $pdo->query("SELECT * FROM lugar_turistico WHERE activo = 1");
+        $stmt = $pdo->query("SELECT id_lugar, nombre, descripcion, latitud, longitud, direccion, categoria, calificacion, horario, imagen_url, panorama_url, activo FROM lugar_turistico WHERE activo = 1");
         $lugares = $stmt->fetchAll();
         echo json_encode(['success' => true, 'data' => $lugares]);
     } catch(PDOException $e) {
-        echo json_encode(['error' => $e->getMessage()]);
+        echo json_encode(['success' => false, 'error' => $e->getMessage()]);
     }
 }
 
@@ -60,7 +60,7 @@ function actualizarLugar($pdo) {
     $id = $_GET['id'] ?? null;
     
     if (!$id) {
-        echo json_encode(['error' => 'ID no proporcionado']);
+        echo json_encode(['success' => false, 'error' => 'ID no proporcionado']);
         return;
     }
     
@@ -99,7 +99,7 @@ function eliminarLugar($pdo) {
     $id = $_GET['id'] ?? null;
     
     if (!$id) {
-        echo json_encode(['error' => 'ID no proporcionado']);
+        echo json_encode(['success' => false, 'error' => 'ID no proporcionado']);
         return;
     }
     

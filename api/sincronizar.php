@@ -1,8 +1,7 @@
 <?php
 // api/sincronizar.php
-// ✅ SINCRONIZACIÓN AUTOMÁTICA desde uMap
-// ✅ Lee NOMBRE y DESCRIPCIÓN de las capas en uMap
-// ✅ Guarda todo automáticamente en la base de datos
+// ✅ SINCRONIZACIÓN uMap → MySQL
+// ✅ Guarda: Rutas (IDA/VUELTA), Paradas, Lugares Turísticos, Relaciones
 
 require_once '../config/database.php';
 
@@ -13,23 +12,22 @@ function logDebug($msg) {
     error_log("[sincronizar] " . $msg);
 }
 
-logDebug("=== INICIO SINCRONIZACIÓN uMap AUTOMÁTICA ===");
+logDebug("=== INICIO SINCRONIZACIÓN uMap ===");
 
 // ============================================================
-// CONFIGURACIÓN DE uMap
+// CONFIGURACIÓN uMap
 // ============================================================
 const UMAP_ID = '1447967';
 const UMAP_BASE = 'https://umap.openstreetmap.fr/en/datalayer/';
 
-// ✅ SOLO LOS IDs DE LAS CAPAS - TODO LO DEMÁS SE LEE DE uMap
 const DATALAYER_IDS = [
-    '0a5a5bfc-8c95-4fea-8400-3a8438a2b533',
-    '291c212e-44db-4460-b84e-773bcfede107',
-    // ✅ Agrega nuevos IDs aquí y TODO se leerá automáticamente
+    '0a5a5bfc-8c95-4fea-8400-3a8438a2b533', // Minibus 364 - IDA
+    '291c212e-44db-4460-b84e-773bcfede107', // Minibus 364 - VUELTA
+    // Agrega más capas aquí cuando las crees
 ];
 
 // ============================================================
-// FUNCIÓN: DESCARGAR GEOJSON DESDE uMap
+// FUNCIÓN: DESCARGAR GeoJSON
 // ============================================================
 function descargarGeoJSON($datalayerId) {
     $url = UMAP_BASE . UMAP_ID . '/' . $datalayerId . '/';
@@ -63,65 +61,43 @@ function descargarGeoJSON($datalayerId) {
 }
 
 // ============================================================
-// FUNCIÓN: OBTENER METADATOS DE LA CAPA (nombre, descripción)
-// ============================================================
-function obtenerMetadatosCapa($geoJSON) {
-    $properties = $geoJSON['properties'] ?? [];
-    
-    // ✅ Leer nombre de la capa desde uMap
-    $nombre = trim($properties['name'] ?? '');
-    if (empty($nombre)) {
-        $nombre = 'Ruta sin nombre';
-    }
-    
-    // ✅ Leer descripción de la capa desde uMap
-    $descripcion = trim($properties['description'] ?? '');
-    
-    logDebug("📋 Metadatos: nombre='$nombre', descripcion='$descripcion'");
-    
-    return [
-        'nombre' => $nombre,
-        'descripcion' => $descripcion
-    ];
-}
-
-// ============================================================
-// FUNCIÓN: DETECTAR COLOR SEGÚN NOMBRE
+// FUNCIÓN: DETECTAR COLOR
 // ============================================================
 function detectarColor($nombre) {
     $nombreLower = strtolower($nombre);
-    
-    // 🔴 IDA → Rojo
     if (strpos($nombreLower, 'ida') !== false) {
-        return '#E74C3C';
+        return '#E74C3C'; // 🔴 Rojo
     }
-    
-    // 🔵 VUELTA o DEVUELTA → Azul
     if (strpos($nombreLower, 'vuelta') !== false || strpos($nombreLower, 'devuelta') !== false) {
-        return '#2980B9';
+        return '#2980B9'; // 🔵 Azul
     }
-    
-    // 🟢 Por defecto → Verde
-    return '#27AE60';
+    return '#27AE60'; // 🟢 Verde por defecto
 }
 
 // ============================================================
 // FUNCIÓN: PROCESAR FEATURECOLLECTION
 // ============================================================
-function procesarFeatureCollection($geoJSON, $metadatos) {
+function procesarFeatureCollection($geoJSON) {
     $rutas = [];
+    $lugares = [];
     $features = $geoJSON['features'] ?? [];
-    $nombreCapa = $metadatos['nombre'];
-    $descripcionCapa = $metadatos['descripcion'];
-    $color = detectarColor($nombreCapa);
+    $nombreCapa = $geoJSON['properties']['name'] ?? 'Capa sin nombre';
+    $descripcionCapa = $geoJSON['properties']['description'] ?? '';
     
     foreach ($features as $feature) {
         $geometry = $feature['geometry'] ?? null;
+        $properties = $feature['properties'] ?? [];
+        $geomType = $geometry['type'] ?? null;
         
-        if (!$geometry || !isset($geometry['type'])) continue;
+        if (!$geometry || !$geomType) continue;
         
-        if ($geometry['type'] === 'LineString') {
-            // ── RUTA ──
+        // ── OBTENER NOMBRE ──
+        $nombre = trim($properties['name'] ?? $nombreCapa);
+        if (empty($nombre)) $nombre = 'Sin nombre';
+        
+        // ── PROCESAR SEGÚN TIPO ──
+        if ($geomType === 'LineString') {
+            // ===== RUTA =====
             $coords = $geometry['coordinates'] ?? [];
             if (count($coords) < 2) continue;
             
@@ -136,31 +112,107 @@ function procesarFeatureCollection($geoJSON, $metadatos) {
             }
             
             if (count($puntos) > 0) {
+                $color = detectarColor($nombre);
                 $rutas[] = [
-                    'nombre' => $nombreCapa,           // ✅ Desde uMap
-                    'descripcion' => $descripcionCapa,  // ✅ Desde uMap
-                    'color' => $color,                  // ✅ Detectado automáticamente
-                    'coordenadas' => $puntos
+                    'nombre' => $nombre,
+                    'descripcion' => $descripcionCapa,
+                    'color' => $color,
+                    'coordenadas' => $puntos,
+                    'propiedades' => $properties
                 ];
-                logDebug("  🗺️ Ruta: $nombreCapa (" . count($puntos) . " puntos)");
-                if (!empty($descripcionCapa)) {
-                    logDebug("  📝 Descripción: $descripcionCapa");
-                }
+                logDebug("  🗺️ Ruta: $nombre (" . count($puntos) . " puntos)");
             }
+        } elseif ($geomType === 'Point') {
+            // ===== LUGAR TURÍSTICO =====
+            $coord = $geometry['coordinates'] ?? [];
+            if (count($coord) < 2) continue;
+            
+            $lat = (float)$coord[1];
+            $lng = (float)$coord[0];
+            
+            // Obtener categoría
+            $categoria = $properties['categoria'] ?? 'Atracción turística';
+            $categoriaLower = strtolower($categoria);
+            if (strpos($categoriaLower, 'mirador') !== false) $categoria = 'Mirador';
+            elseif (strpos($categoriaLower, 'plaza') !== false) $categoria = 'Plaza';
+            elseif (strpos($categoriaLower, 'parque') !== false) $categoria = 'Parque';
+            elseif (strpos($categoriaLower, 'museo') !== false) $categoria = 'Museo';
+            elseif (strpos($categoriaLower, 'iglesia') !== false) $categoria = 'Iglesia';
+            elseif (strpos($categoriaLower, 'mercado') !== false) $categoria = 'Mercado';
+            elseif (strpos($categoriaLower, 'naturaleza') !== false) $categoria = 'Naturaleza';
+            
+            $lugares[] = [
+                'nombre' => $nombre,
+                'descripcion' => $properties['description'] ?? '',
+                'latitud' => $lat,
+                'longitud' => $lng,
+                'categoria' => $categoria,
+                'direccion' => $properties['direccion'] ?? '',
+                'imagen_url' => $properties['imagen_url'] ?? '',
+                'panorama_url' => $properties['panorama_url'] ?? '',
+                'propiedades' => $properties
+            ];
+            logDebug("  📍 Lugar: $nombre ($lat, $lng)");
         }
     }
     
-    return $rutas;
+    return ['rutas' => $rutas, 'lugares' => $lugares];
 }
 
 // ============================================================
 // FUNCIÓN: GUARDAR EN BASE DE DATOS
 // ============================================================
-function guardarRutas($rutas, $pdo) {
+function guardarDatos($rutas, $lugares, $pdo) {
     $rutasAgregadas = 0;
     $paradasAgregadas = 0;
     $paradasActualizadas = 0;
+    $lugaresAgregados = 0;
+    $lugaresActualizados = 0;
     
+    // ===== 1. GUARDAR LUGARES TURÍSTICOS =====
+    $lugarIds = [];
+    foreach ($lugares as $lugar) {
+        $sql = "INSERT INTO lugar_turistico 
+                (nombre, descripcion, latitud, longitud, categoria, direccion, imagen_url, panorama_url, activo) 
+                VALUES (:nombre, :descripcion, :latitud, :longitud, :categoria, :direccion, :imagen_url, :panorama_url, 1)
+                ON DUPLICATE KEY UPDATE
+                nombre = VALUES(nombre),
+                descripcion = VALUES(descripcion),
+                categoria = VALUES(categoria),
+                direccion = VALUES(direccion),
+                imagen_url = VALUES(imagen_url),
+                panorama_url = VALUES(panorama_url),
+                activo = 1";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            ':nombre' => $lugar['nombre'],
+            ':descripcion' => $lugar['descripcion'],
+            ':latitud' => $lugar['latitud'],
+            ':longitud' => $lugar['longitud'],
+            ':categoria' => $lugar['categoria'],
+            ':direccion' => $lugar['direccion'],
+            ':imagen_url' => $lugar['imagen_url'],
+            ':panorama_url' => $lugar['panorama_url']
+        ]);
+        
+        // Obtener ID del lugar
+        $idLugar = $pdo->lastInsertId();
+        if (!$idLugar) {
+            // Buscar por coordenadas
+            $check = $pdo->prepare("SELECT id_lugar FROM lugar_turistico WHERE latitud = :lat AND longitud = :lng");
+            $check->execute([':lat' => $lugar['latitud'], ':lng' => $lugar['longitud']]);
+            $row = $check->fetch();
+            $idLugar = $row ? $row['id_lugar'] : null;
+        }
+        
+        if ($idLugar) {
+            $lugarIds[] = $idLugar;
+            $lugaresAgregados++;
+            logDebug("✅ Lugar guardado: {$lugar['nombre']} (ID: $idLugar)");
+        }
+    }
+    
+    // ===== 2. GUARDAR RUTAS Y PARADAS =====
     // Limpiar datos anteriores
     $pdo->exec("DELETE FROM ruta_parada");
     $pdo->exec("DELETE FROM ruta");
@@ -169,8 +221,9 @@ function guardarRutas($rutas, $pdo) {
         $nombre = $ruta['nombre'];
         $descripcion = $ruta['descripcion'] ?? '';
         $color = $ruta['color'] ?? '#27AE60';
+        $propiedades = $ruta['propiedades'] ?? [];
         
-        // INSERTAR RUTA (con descripción)
+        // INSERTAR RUTA
         $sql = "INSERT INTO ruta (nombre, descripcion, tipo, color_hex, activo) 
                 VALUES (:nombre, :descripcion, 'minibus', :color, 1)";
         $stmt = $pdo->prepare($sql);
@@ -183,16 +236,53 @@ function guardarRutas($rutas, $pdo) {
         $rutasAgregadas++;
         
         logDebug("✅ Ruta guardada: $nombre (ID: $idRuta)");
-        if (!empty($descripcion)) {
-            logDebug("   📝 Desc: $descripcion");
+        
+        // ===== RELACIONAR RUTA CON LUGAR =====
+        // Buscar lugar_id en propiedades o por coincidencia de nombre
+        $lugarId = null;
+        
+        // Primero: buscar en propiedades
+        if (isset($propiedades['lugar_id'])) {
+            $lugarId = (int)$propiedades['lugar_id'];
+        } elseif (isset($propiedades['lugar'])) {
+            // Buscar lugar por nombre
+            $nombreLugar = $propiedades['lugar'];
+            $check = $pdo->prepare("SELECT id_lugar FROM lugar_turistico WHERE nombre LIKE :nombre LIMIT 1");
+            $check->execute([':nombre' => '%' . $nombreLugar . '%']);
+            $row = $check->fetch();
+            if ($row) $lugarId = $row['id_lugar'];
         }
         
-        // INSERTAR PARADAS
+        // Segundo: buscar por coincidencia de nombre
+        if (!$lugarId) {
+            $nombreLugar = str_replace(['Minibus', 'Micro', 'IDA', 'VUELTA', '-'], '', $nombre);
+            $nombreLugar = trim($nombreLugar);
+            if (!empty($nombreLugar)) {
+                $check = $pdo->prepare("SELECT id_lugar FROM lugar_turistico WHERE nombre LIKE :nombre LIMIT 1");
+                $check->execute([':nombre' => '%' . $nombreLugar . '%']);
+                $row = $check->fetch();
+                if ($row) $lugarId = $row['id_lugar'];
+            }
+        }
+        
+        // Tercero: si hay lugares guardados, asociar al primero (si no hay relación específica)
+        if (!$lugarId && count($lugarIds) > 0) {
+            $lugarId = $lugarIds[0];
+        }
+        
+        if ($lugarId) {
+            $sql = "INSERT INTO ruta_lugar (id_ruta, id_lugar, orden) VALUES (:id_ruta, :id_lugar, 1)";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute([':id_ruta' => $idRuta, ':id_lugar' => $lugarId]);
+            logDebug("🔗 Ruta '$nombre' relacionada con lugar ID: $lugarId");
+        }
+        
+        // ===== GUARDAR PARADAS =====
         $orden = 1;
         $totalPuntos = count($ruta['coordenadas']);
         
         foreach ($ruta['coordenadas'] as $punto) {
-            // Buscar si la parada ya existe (por coordenadas)
+            // Buscar si la parada ya existe
             $checkSql = "SELECT id_parada FROM parada 
                          WHERE ABS(latitud - :lat) < 0.000001 
                          AND ABS(longitud - :lng) < 0.000001";
@@ -237,7 +327,9 @@ function guardarRutas($rutas, $pdo) {
     return [
         'rutas_agregadas' => $rutasAgregadas,
         'paradas_agregadas' => $paradasAgregadas,
-        'paradas_actualizadas' => $paradasActualizadas
+        'paradas_actualizadas' => $paradasActualizadas,
+        'lugares_agregados' => $lugaresAgregados,
+        'lugares_actualizados' => $lugaresActualizados
     ];
 }
 
@@ -246,53 +338,39 @@ function guardarRutas($rutas, $pdo) {
 // ============================================================
 try {
     $todasLasRutas = [];
+    $todosLosLugares = [];
     $errores = [];
-    $metadatosCaps = [];
     
     foreach (DATALAYER_IDS as $datalayerId) {
-        logDebug("📥 Procesando capa: $datalayerId");
-        
         $geoJSON = descargarGeoJSON($datalayerId);
         if ($geoJSON === null) {
             $errores[] = "No se pudo descargar capa: $datalayerId";
             continue;
         }
         
-        // ✅ Obtener nombre y descripción desde uMap
-        $metadatos = obtenerMetadatosCapa($geoJSON);
-        $metadatosCaps[] = $metadatos;
-        
-        // ✅ Procesar la capa con los metadatos
-        $rutas = procesarFeatureCollection($geoJSON, $metadatos);
-        $todasLasRutas = array_merge($todasLasRutas, $rutas);
+        $resultado = procesarFeatureCollection($geoJSON);
+        $todasLasRutas = array_merge($todasLasRutas, $resultado['rutas']);
+        $todosLosLugares = array_merge($todosLosLugares, $resultado['lugares']);
     }
     
-    if (empty($todasLasRutas)) {
-        throw new Exception('No se encontraron rutas en las capas de uMap');
+    if (empty($todasLasRutas) && empty($todosLosLugares)) {
+        throw new Exception('No se encontraron datos en las capas de uMap');
     }
     
-    $resultado = guardarRutas($todasLasRutas, $pdo);
-    
-    // ✅ Preparar resumen de metadatos para el debug
-    $resumenMetadatos = [];
-    foreach ($metadatosCaps as $meta) {
-        $resumenMetadatos[] = [
-            'nombre' => $meta['nombre'],
-            'descripcion' => $meta['descripcion'] ?: '(sin descripción)'
-        ];
-    }
+    $resultado = guardarDatos($todasLasRutas, $todosLosLugares, $pdo);
     
     $response = [
         'success' => true,
+        'mensaje' => 'Sincronización uMap completada exitosamente',
         'rutas_agregadas' => $resultado['rutas_agregadas'],
         'paradas_agregadas' => $resultado['paradas_agregadas'],
         'paradas_actualizadas' => $resultado['paradas_actualizadas'],
-        'mensaje' => 'Sincronización uMap completada exitosamente',
+        'lugares_agregados' => $resultado['lugares_agregados'],
+        'lugares_actualizados' => $resultado['lugares_actualizados'],
         'debug' => [
             'capas_procesadas' => count(DATALAYER_IDS),
             'rutas_encontradas' => count($todasLasRutas),
-            'metadatos_capas' => $resumenMetadatos,
-            'nombres_rutas' => array_column($todasLasRutas, 'nombre'),
+            'lugares_encontrados' => count($todosLosLugares),
             'errores' => $errores
         ]
     ];
