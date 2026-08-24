@@ -1,7 +1,8 @@
 <?php
 // api/sincronizar.php
-// ✅ FUENTE: uMap (https://umap.openstreetmap.fr)
-// ✅ Nombres personalizados para cada capa
+// ✅ SINCRONIZACIÓN AUTOMÁTICA desde uMap
+// ✅ Lee NOMBRE y DESCRIPCIÓN de las capas en uMap
+// ✅ Guarda todo automáticamente en la base de datos
 
 require_once '../config/database.php';
 
@@ -12,7 +13,7 @@ function logDebug($msg) {
     error_log("[sincronizar] " . $msg);
 }
 
-logDebug("=== INICIO SINCRONIZACIÓN uMap ===");
+logDebug("=== INICIO SINCRONIZACIÓN uMap AUTOMÁTICA ===");
 
 // ============================================================
 // CONFIGURACIÓN DE uMap
@@ -20,22 +21,11 @@ logDebug("=== INICIO SINCRONIZACIÓN uMap ===");
 const UMAP_ID = '1447967';
 const UMAP_BASE = 'https://umap.openstreetmap.fr/en/datalayer/';
 
-// ✅ MAPA DE CAPAS CON NOMBRES PERSONALIZADOS
-// [datalayer_id] => [nombre_ruta, color]
-const DATALAYERS = [
-    '0a5a5bfc-8c95-4fea-8400-3a8438a2b533' => [
-        'nombre' => 'Minibus 364 - IDA',
-        'color' => '#E74C3C'  // Rojo
-    ],
-    '291c212e-44db-4460-b84e-773bcfede107' => [
-        'nombre' => 'Minibus 364 - VUELTA',
-        'color' => '#2980B9'  // Azul
-    ],
-    // ⚠️ Agrega más capas aquí cuando las crees:
-    // 'nuevo-id-aqui' => [
-    //     'nombre' => 'Mi Ruta Personalizada',
-    //     'color' => '#27AE60'  // Verde
-    // ],
+// ✅ SOLO LOS IDs DE LAS CAPAS - TODO LO DEMÁS SE LEE DE uMap
+const DATALAYER_IDS = [
+    '0a5a5bfc-8c95-4fea-8400-3a8438a2b533',
+    '291c212e-44db-4460-b84e-773bcfede107',
+    // ✅ Agrega nuevos IDs aquí y TODO se leerá automáticamente
 ];
 
 // ============================================================
@@ -73,11 +63,57 @@ function descargarGeoJSON($datalayerId) {
 }
 
 // ============================================================
+// FUNCIÓN: OBTENER METADATOS DE LA CAPA (nombre, descripción)
+// ============================================================
+function obtenerMetadatosCapa($geoJSON) {
+    $properties = $geoJSON['properties'] ?? [];
+    
+    // ✅ Leer nombre de la capa desde uMap
+    $nombre = trim($properties['name'] ?? '');
+    if (empty($nombre)) {
+        $nombre = 'Ruta sin nombre';
+    }
+    
+    // ✅ Leer descripción de la capa desde uMap
+    $descripcion = trim($properties['description'] ?? '');
+    
+    logDebug("📋 Metadatos: nombre='$nombre', descripcion='$descripcion'");
+    
+    return [
+        'nombre' => $nombre,
+        'descripcion' => $descripcion
+    ];
+}
+
+// ============================================================
+// FUNCIÓN: DETECTAR COLOR SEGÚN NOMBRE
+// ============================================================
+function detectarColor($nombre) {
+    $nombreLower = strtolower($nombre);
+    
+    // 🔴 IDA → Rojo
+    if (strpos($nombreLower, 'ida') !== false) {
+        return '#E74C3C';
+    }
+    
+    // 🔵 VUELTA o DEVUELTA → Azul
+    if (strpos($nombreLower, 'vuelta') !== false || strpos($nombreLower, 'devuelta') !== false) {
+        return '#2980B9';
+    }
+    
+    // 🟢 Por defecto → Verde
+    return '#27AE60';
+}
+
+// ============================================================
 // FUNCIÓN: PROCESAR FEATURECOLLECTION
 // ============================================================
-function procesarFeatureCollection($geoJSON, $nombreRuta) {
+function procesarFeatureCollection($geoJSON, $metadatos) {
     $rutas = [];
     $features = $geoJSON['features'] ?? [];
+    $nombreCapa = $metadatos['nombre'];
+    $descripcionCapa = $metadatos['descripcion'];
+    $color = detectarColor($nombreCapa);
     
     foreach ($features as $feature) {
         $geometry = $feature['geometry'] ?? null;
@@ -101,10 +137,15 @@ function procesarFeatureCollection($geoJSON, $nombreRuta) {
             
             if (count($puntos) > 0) {
                 $rutas[] = [
-                    'nombre' => $nombreRuta,  // ✅ Usa el nombre personalizado
+                    'nombre' => $nombreCapa,           // ✅ Desde uMap
+                    'descripcion' => $descripcionCapa,  // ✅ Desde uMap
+                    'color' => $color,                  // ✅ Detectado automáticamente
                     'coordenadas' => $puntos
                 ];
-                logDebug("  🗺️ Ruta: $nombreRuta (" . count($puntos) . " puntos)");
+                logDebug("  🗺️ Ruta: $nombreCapa (" . count($puntos) . " puntos)");
+                if (!empty($descripcionCapa)) {
+                    logDebug("  📝 Descripción: $descripcionCapa");
+                }
             }
         }
     }
@@ -126,18 +167,25 @@ function guardarRutas($rutas, $pdo) {
     
     foreach ($rutas as $ruta) {
         $nombre = $ruta['nombre'];
-        $color = $ruta['color'] ?? '#E74C3C';
+        $descripcion = $ruta['descripcion'] ?? '';
+        $color = $ruta['color'] ?? '#27AE60';
         
-        // INSERTAR RUTA
-        $sql = "INSERT INTO ruta (nombre, tipo, color_hex, activo) 
-                VALUES (:nombre, 'minibus', :color, 1)";
+        // INSERTAR RUTA (con descripción)
+        $sql = "INSERT INTO ruta (nombre, descripcion, tipo, color_hex, activo) 
+                VALUES (:nombre, :descripcion, 'minibus', :color, 1)";
         $stmt = $pdo->prepare($sql);
         $stmt->execute([
             ':nombre' => $nombre,
+            ':descripcion' => $descripcion,
             ':color' => $color
         ]);
         $idRuta = $pdo->lastInsertId();
         $rutasAgregadas++;
+        
+        logDebug("✅ Ruta guardada: $nombre (ID: $idRuta)");
+        if (!empty($descripcion)) {
+            logDebug("   📝 Desc: $descripcion");
+        }
         
         // INSERTAR PARADAS
         $orden = 1;
@@ -199,12 +247,10 @@ function guardarRutas($rutas, $pdo) {
 try {
     $todasLasRutas = [];
     $errores = [];
+    $metadatosCaps = [];
     
-    foreach (DATALAYERS as $datalayerId => $config) {
-        $nombreRuta = $config['nombre'];
-        $color = $config['color'];
-        
-        logDebug("📥 Procesando: $nombreRuta (ID: $datalayerId)");
+    foreach (DATALAYER_IDS as $datalayerId) {
+        logDebug("📥 Procesando capa: $datalayerId");
         
         $geoJSON = descargarGeoJSON($datalayerId);
         if ($geoJSON === null) {
@@ -212,13 +258,12 @@ try {
             continue;
         }
         
-        $rutas = procesarFeatureCollection($geoJSON, $nombreRuta);
+        // ✅ Obtener nombre y descripción desde uMap
+        $metadatos = obtenerMetadatosCapa($geoJSON);
+        $metadatosCaps[] = $metadatos;
         
-        // Agregar el color a cada ruta
-        foreach ($rutas as &$ruta) {
-            $ruta['color'] = $color;
-        }
-        
+        // ✅ Procesar la capa con los metadatos
+        $rutas = procesarFeatureCollection($geoJSON, $metadatos);
         $todasLasRutas = array_merge($todasLasRutas, $rutas);
     }
     
@@ -228,6 +273,15 @@ try {
     
     $resultado = guardarRutas($todasLasRutas, $pdo);
     
+    // ✅ Preparar resumen de metadatos para el debug
+    $resumenMetadatos = [];
+    foreach ($metadatosCaps as $meta) {
+        $resumenMetadatos[] = [
+            'nombre' => $meta['nombre'],
+            'descripcion' => $meta['descripcion'] ?: '(sin descripción)'
+        ];
+    }
+    
     $response = [
         'success' => true,
         'rutas_agregadas' => $resultado['rutas_agregadas'],
@@ -235,8 +289,9 @@ try {
         'paradas_actualizadas' => $resultado['paradas_actualizadas'],
         'mensaje' => 'Sincronización uMap completada exitosamente',
         'debug' => [
-            'capas_procesadas' => count(DATALAYERS),
+            'capas_procesadas' => count(DATALAYER_IDS),
             'rutas_encontradas' => count($todasLasRutas),
+            'metadatos_capas' => $resumenMetadatos,
             'nombres_rutas' => array_column($todasLasRutas, 'nombre'),
             'errores' => $errores
         ]
