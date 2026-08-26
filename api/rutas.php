@@ -1,5 +1,19 @@
 <?php
 // api/rutas.php
+// ============================================================
+// ✅ HEADERS CORS - DEBEN IR ANTES DE CUALQUIER OTRA COSA
+// ============================================================
+header('Content-Type: application/json');
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin');
+header('Access-Control-Max-Age: 3600');
+
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit();
+}
+
 require_once '../config/database.php';
 
 $method = $_SERVER['REQUEST_METHOD'];
@@ -24,19 +38,48 @@ switch($method) {
 
 function obtenerRutas($pdo) {
     try {
-        $stmt = $pdo->query("SELECT * FROM ruta WHERE activo = 1");
+        $stmt = $pdo->query("SELECT id_ruta, nombre, descripcion, tipo, color_hex FROM ruta WHERE activo = 1");
         $rutas = $stmt->fetchAll();
-        echo json_encode(['success' => true, 'data' => $rutas]);
+        
+        // Formatear datos
+        $data = [];
+        foreach ($rutas as $ruta) {
+            $data[] = [
+                'id_ruta' => (int)$ruta['id_ruta'],
+                'nombre' => $ruta['nombre'],
+                'descripcion' => $ruta['descripcion'] ?? '',
+                'tipo' => $ruta['tipo'] ?? 'minibus',
+                'color_hex' => $ruta['color_hex'] ?? '#0066CC'
+            ];
+        }
+        
+        echo json_encode([
+            'success' => true,
+            'data' => $data,
+            'count' => count($data)
+        ]);
     } catch(PDOException $e) {
-        echo json_encode(['error' => $e->getMessage()]);
+        http_response_code(500);
+        echo json_encode([
+            'success' => false,
+            'error' => 'Error en la base de datos: ' . $e->getMessage()
+        ]);
     }
 }
 
 function crearRuta($pdo) {
     $data = json_decode(file_get_contents('php://input'), true);
     
-    $sql = "INSERT INTO ruta (nombre, descripcion, tipo, color_hex) 
-            VALUES (:nombre, :descripcion, :tipo, :color_hex)";
+    if (!$data || !isset($data['nombre'])) {
+        echo json_encode([
+            'success' => false,
+            'error' => 'Faltan datos requeridos'
+        ]);
+        return;
+    }
+    
+    $sql = "INSERT INTO ruta (nombre, descripcion, tipo, color_hex, activo) 
+            VALUES (:nombre, :descripcion, :tipo, :color_hex, 1)";
     
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
@@ -46,7 +89,10 @@ function crearRuta($pdo) {
         ':color_hex' => $data['color_hex'] ?? '#0066CC'
     ]);
     
-    echo json_encode(['success' => true, 'id' => $pdo->lastInsertId()]);
+    echo json_encode([
+        'success' => true,
+        'id' => (int)$pdo->lastInsertId()
+    ]);
 }
 
 function actualizarRuta($pdo) {
@@ -54,7 +100,10 @@ function actualizarRuta($pdo) {
     $id = $_GET['id'] ?? null;
     
     if (!$id) {
-        echo json_encode(['error' => 'ID no proporcionado']);
+        echo json_encode([
+            'success' => false,
+            'error' => 'ID no proporcionado'
+        ]);
         return;
     }
     
@@ -81,7 +130,10 @@ function eliminarRuta($pdo) {
     $id = $_GET['id'] ?? null;
     
     if (!$id) {
-        echo json_encode(['error' => 'ID no proporcionado']);
+        echo json_encode([
+            'success' => false,
+            'error' => 'ID no proporcionado'
+        ]);
         return;
     }
     
