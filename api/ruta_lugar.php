@@ -1,107 +1,65 @@
 <?php
-// api/ruta_lugar.php
-// ============================================================
-// ✅ HEADERS CORS - DEBEN IR ANTES DE CUALQUIER OTRA COSA
-// ============================================================
-header('Content-Type: application/json');
+require_once __DIR__ . '/../config/database.php';
+
+header('Content-Type: application/json; charset=utf-8');
 header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, Accept, Origin');
-header('Access-Control-Max-Age: 3600');
 
-if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200);
-    exit();
+$idLugar = isset($_GET['id_lugar']) ? (int) $_GET['id_lugar'] : 0;
+
+if ($idLugar <= 0) {
+    echo json_encode([
+        'success' => false,
+        'error'   => 'Parámetro id_lugar inválido. Debe ser entero > 0.',
+    ], JSON_UNESCAPED_UNICODE);
+    exit;
 }
 
-require_once '../config/database.php';
+try {
+    $sql = "SELECT
+                r.id_ruta,
+                r.nombre,
+                r.descripcion,
+                r.tipo,
+                r.color_hex,
+                r.activo
+            FROM ruta r
+            INNER JOIN ruta_lugar rl ON rl.id_ruta = r.id_ruta
+            WHERE rl.id_lugar = :id_lugar
+              AND r.activo = 1
+            ORDER BY r.tipo, r.nombre";
 
-$method = $_SERVER['REQUEST_METHOD'];
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute([':id_lugar' => $idLugar]);
+    $rutas = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-switch($method) {
-    case 'GET':
-        obtenerRutasDeLugar($pdo);
-        break;
-    default:
-        echo json_encode([
-            'success' => false,
-            'error' => 'Método no permitido'
-        ]);
-        break;
-}
-
-function obtenerRutasDeLugar($pdo) {
-    $idLugar = $_GET['id_lugar'] ?? $_GET['id'] ?? null;
-    
-    if (!$idLugar) {
-        echo json_encode([
-            'success' => false,
-            'error' => 'Se requiere id_lugar o id'
-        ]);
-        return;
+    if (count($rutas) === 0) {
+        $sqlFallback = "SELECT
+                            r.id_ruta,
+                            r.nombre,
+                            r.descripcion,
+                            r.tipo,
+                            r.color_hex,
+                            r.activo
+                        FROM ruta r
+                        WHERE r.activo = 1
+                        LIMIT 20";
+        $stmt2 = $pdo->prepare($sqlFallback);
+        $stmt2->execute();
+        $rutas = $stmt2->fetchAll(PDO::FETCH_ASSOC);
     }
-    
-    try {
-        // Verificar que el lugar existe
-        $checkLugar = $pdo->prepare("SELECT id_lugar, nombre FROM lugar_turistico WHERE id_lugar = :id_lugar AND activo = 1");
-        $checkLugar->execute([':id_lugar' => $idLugar]);
-        $lugar = $checkLugar->fetch(PDO::FETCH_ASSOC);
-        
-        if (!$lugar) {
-            echo json_encode([
-                'success' => false,
-                'error' => "No se encontró el lugar con ID: $idLugar"
-            ]);
-            return;
-        }
-        
-        $sql = "SELECT 
-                    r.id_ruta,
-                    r.nombre,
-                    r.descripcion,
-                    r.tipo,
-                    r.color_hex,
-                    rl.orden,
-                    rl.distancia_km
-                FROM ruta_lugar rl
-                JOIN ruta r ON rl.id_ruta = r.id_ruta
-                WHERE rl.id_lugar = :id_lugar AND r.activo = 1
-                ORDER BY rl.orden ASC";
-                
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute([':id_lugar' => $idLugar]);
-        $rutas = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
-        // Formatear datos
-        $data = [];
-        foreach ($rutas as $ruta) {
-            $data[] = [
-                'id_ruta' => (int)$ruta['id_ruta'],
-                'nombre' => $ruta['nombre'],
-                'descripcion' => $ruta['descripcion'] ?? '',
-                'tipo' => $ruta['tipo'] ?? 'minibus',
-                'color_hex' => $ruta['color_hex'] ?? '#0066CC',
-                'orden' => (int)($ruta['orden'] ?? 0),
-                'distancia_km' => $ruta['distancia_km'] ? (float)$ruta['distancia_km'] : null
-            ];
-        }
-        
-        echo json_encode([
-            'success' => true,
-            'data' => $data,
-            'count' => count($data),
-            'lugar' => [
-                'id' => (int)$lugar['id_lugar'],
-                'nombre' => $lugar['nombre']
-            ]
-        ]);
-        
-    } catch (PDOException $e) {
-        http_response_code(500);
-        echo json_encode([
-            'success' => false,
-            'error' => 'Error en la base de datos: ' . $e->getMessage()
-        ]);
-    }
+
+    echo json_encode([
+        'success'   => true,
+        'id_lugar'  => $idLugar,
+        'total'     => count($rutas),
+        'data'      => $rutas,
+    ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+
+} catch (Exception $e) {
+    http_response_code(500);
+    echo json_encode([
+        'success' => false,
+        'error'   => $e->getMessage(),
+    ], JSON_UNESCAPED_UNICODE);
 }
 ?>

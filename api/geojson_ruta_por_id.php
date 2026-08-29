@@ -8,47 +8,37 @@ header('Cache-Control: no-cache, must-revalidate');
 
 if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') { http_response_code(200); exit(); }
 
-$idLugar = isset($_GET['id_lugar']) ? (int) $_GET['id_lugar'] : 0;
-$grupo   = isset($_GET['grupo'])    ? trim($_GET['grupo']) : '';
+$idRuta = isset($_GET['id_ruta']) ? (int) $_GET['id_ruta'] : 0;
+$nombre = isset($_GET['nombre']) ? trim($_GET['nombre']) : '';
 
-if ($idLugar <= 0 && empty($grupo)) {
+if ($idRuta <= 0 && empty($nombre)) {
     echo json_encode([
         'type'     => 'FeatureCollection',
         'name'     => 'Error',
-        'error'    => 'Se requiere ?id_lugar=X o ?grupo=NombreDelLugar',
+        'error'    => 'Se requiere ?id_ruta=X o ?nombre=NombreDeLaRuta (puede ser parcial)',
         'features' => []
     ], JSON_UNESCAPED_UNICODE);
     exit;
 }
 
 try {
-    $joinLugar = "INNER JOIN ruta_lugar rl ON rl.id_ruta = r.id_ruta
-                  INNER JOIN lugar_turistico l ON l.id_lugar = rl.id_lugar";
-    $where = ["r.activo = 1"];
+    $where = ["activo = 1"];
     $params = [];
-
-    if ($idLugar > 0) {
-        $where[] = "l.id_lugar = :id_lugar";
-        $params[':id_lugar'] = $idLugar;
-    } elseif (!empty($grupo)) {
-        $where[] = "(l.grupo_umap LIKE :grupo OR l.nombre LIKE :grupo2)";
-        $params[':grupo']  = "%{$grupo}%";
-        $params[':grupo2'] = "%{$grupo}%";
+    if ($idRuta > 0) {
+        $where[] = "id_ruta = :id";
+        $params[':id'] = $idRuta;
+    } else {
+        $where[] = "nombre LIKE :nombre";
+        $params[':nombre'] = "%{$nombre}%";
     }
 
-    $sqlRutas = "SELECT DISTINCT
-                    r.id_ruta,
-                    r.nombre,
-                    r.descripcion,
-                    r.tipo,
-                    r.color_hex
-                FROM ruta r
-                {$joinLugar}
-                WHERE " . implode(" AND ", $where) . "
-                ORDER BY r.nombre";
-    $stmtRutas = $pdo->prepare($sqlRutas);
-    $stmtRutas->execute($params);
-    $rutas = $stmtRutas->fetchAll(PDO::FETCH_ASSOC);
+    $sqlRuta = "SELECT id_ruta, nombre, descripcion, tipo, color_hex
+                  FROM ruta
+                  WHERE " . implode(' AND ', $where) . "
+                  ORDER BY id_ruta ASC LIMIT 50";
+    $stmtR = $pdo->prepare($sqlRuta);
+    $stmtR->execute($params);
+    $rutas = $stmtR->fetchAll(PDO::FETCH_ASSOC);
 
     $sqlPuntos = "SELECT p.latitud, p.longitud, rp.orden
                     FROM ruta_parada rp
@@ -59,7 +49,7 @@ try {
 
     $features = [];
     foreach ($rutas as $ruta) {
-        $idR = (int) $ruta['id_ruta'];
+        $idR = (int)$ruta['id_ruta'];
         $stmtPuntos->execute([':id_ruta' => $idR]);
         $puntos = $stmtPuntos->fetchAll(PDO::FETCH_ASSOC);
 
@@ -75,7 +65,7 @@ try {
         if (empty($color)) {
             $color = (stripos($ruta['nombre'], 'vuelta') !== false) ? '#2980B9' : '#E74C3C';
         }
-        $esIda    = stripos($ruta['nombre'], 'ida') !== false;
+        $esIda    = stripos($ruta['nombre'], 'ida')    !== false;
         $esVuelta = stripos($ruta['nombre'], 'vuelta') !== false;
         $label    = $esIda ? '🟢 IDA' : ($esVuelta ? '🔵 VUELTA' : '📍');
 
@@ -83,27 +73,35 @@ try {
             'type'     => 'Feature',
             'geometry' => ['type'=>'LineString','coordinates'=>$coords],
             'properties' => [
-                'name'        => $ruta['nombre'],
-                'title'       => $ruta['nombre'],
-                'description' => "<strong>" . htmlspecialchars($ruta['nombre']) . "</strong><br>{$label} · " . count($coords) . " paradas" . (!empty($ruta['descripcion']) ? "<br><br>" . htmlspecialchars($ruta['descripcion']) : ""),
-                'id_ruta'     => $idR,
-                'tipo'        => $ruta['tipo'] ?? 'minibus',
-                'color'       => $color,
-                'stroke'      => $color,
-                'stroke-width' => 5,
-                '_umap_options' => ['color' => $color, 'weight' => 5, 'opacity' => 0.9],
+                'name'           => $ruta['nombre'],
+                'title'          => $ruta['nombre'],
+                'description'    => "<strong>".htmlspecialchars($ruta['nombre'])."</strong><br>{$label} · ".count($coords)." paradas".(!empty($ruta['descripcion']) ? "<br><br>".htmlspecialchars($ruta['descripcion']) : ""),
+                'id_ruta'        => $idR,
+                'tipo'           => $ruta['tipo'] ?? 'minibus',
+                'color'          => $color,
+                'stroke'         => $color,
+                'stroke-width'   => 5,
+                'stroke-opacity' => 0.95,
+                '_umap_options'  => [
+                    'color'   => $color,
+                    'weight'  => 5,
+                    'opacity' => 0.95,
+                ],
+                'cant_paradas' => count($coords),
+                'sentido'      => $esIda ? 'IDA' : ($esVuelta ? 'VUELTA' : 'NORMAL'),
             ],
         ];
     }
 
     echo json_encode([
         'type'          => 'FeatureCollection',
-        'name'          => 'Rutas del lugar',
+        'name'          => 'Ruta individual (LineString)',
         'totalFeatures' => count($features),
         'metadata'      => [
-            'id_lugar' => $idLugar,
-            'grupo'    => $grupo,
+            'id_ruta'  => $idRuta,
+            'nombre'   => $nombre,
             'generado' => date('c'),
+            'tabla_fuente' => 'ruta, ruta_parada, parada',
         ],
         'features' => $features,
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);

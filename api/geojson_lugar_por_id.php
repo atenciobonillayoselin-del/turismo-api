@@ -14,7 +14,7 @@ $grupo   = isset($_GET['grupo'])    ? trim($_GET['grupo']) : '';
 if ($idLugar <= 0 && empty($grupo)) {
     echo json_encode([
         'type' => 'FeatureCollection',
-        'error'=> 'Se requiere ?id_lugar=X o ?grupo=NombreLugar',
+        'error'=> 'Se requiere ?id_lugar=X o ?grupo=NombreDelLugar',
         'features' => []
     ], JSON_UNESCAPED_UNICODE);
     exit;
@@ -34,7 +34,9 @@ try {
 
     $sql = "SELECT id_lugar, nombre, descripcion, categoria, latitud, longitud,
                    grupo_umap, icono_umap, color_hex, panorama_url, imagen_url
-            FROM lugar WHERE " . implode(' AND ', $where) . " LIMIT 1";
+            FROM lugar_turistico
+            WHERE " . implode(' AND ', $where) . "
+            LIMIT 1";
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -53,14 +55,14 @@ try {
                     'plaza'=>'town-hall','iglesia'=>'religious-christian',
                     'naturaleza'=>'garden','mercado'=>'shop'
                 ];
+                $icono = 'star';
                 foreach ($mapIcon as $k=>$v) if (str_contains($cat,$k)) { $icono=$v; break; }
-                if (empty($icono)) $icono = 'star';
             }
             $color = $row['color_hex'] ?: '#E74C3C';
             $nombreLimpio = trim(preg_replace('/\s*\([^)]*\)\s*/','',$row['nombre'])) ?: $row['nombre'];
 
             $descHtml = "<strong>".htmlspecialchars($nombreLimpio)."</strong>";
-            if (!empty($row['categoria'])) $descHtml .= "<br><em>".htmlspecialchars($row['categoria'])."</em>";
+            if (!empty($row['categoria']))   $descHtml .= "<br><em>".htmlspecialchars($row['categoria'])."</em>";
             if (!empty($row['descripcion'])) $descHtml .= "<br><br>".htmlspecialchars($row['descripcion']);
             if (!empty($row['panorama_url'])) $descHtml .= "<br><br>🔗 <a href='".htmlspecialchars($row['panorama_url'])."' target='_blank'>Ver panorama 360°</a>";
 
@@ -93,7 +95,7 @@ try {
 
     echo json_encode([
         'type'=>'FeatureCollection',
-        'name'=>'Marcador Lugar',
+        'name'=>'Marcador Lugar Turístico',
         'totalFeatures'=>count($features),
         'metadata'=>['id_lugar'=>$idLugar,'grupo'=>$grupo,'generado'=>date('c')],
         'features'=>$features

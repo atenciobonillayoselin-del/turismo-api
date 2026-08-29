@@ -5,12 +5,8 @@ header('Content-Type: application/geo+json; charset=utf-8');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, OPTIONS');
 header('Cache-Control: no-cache, must-revalidate');
-header('Expires: Mon, 26 Jul 1997 05:00:00 GMT');
 
-if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') {
-    http_response_code(200);
-    exit();
-}
+if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') { http_response_code(200); exit(); }
 
 $idRuta   = isset($_GET['id_ruta'])   ? (int) $_GET['id_ruta']   : 0;
 $grupo    = isset($_GET['grupo'])     ? trim($_GET['grupo'])     : '';
@@ -27,7 +23,7 @@ try {
     if (!empty($grupo)) {
         $where[] = "(r.nombre LIKE :grupo OR EXISTS (
                         SELECT 1 FROM ruta_lugar rl
-                        INNER JOIN lugar l ON l.id_lugar = rl.id_lugar
+                        INNER JOIN lugar_turistico l ON l.id_lugar = rl.id_lugar
                         WHERE rl.id_ruta = r.id_ruta
                           AND (l.grupo_umap LIKE :grupo2 OR l.nombre LIKE :grupo3)
                     ))";
@@ -40,7 +36,7 @@ try {
         $params[':tipo'] = strtolower($tipoRuta);
     }
 
-    $sqlRutas = "SELECT
+    $sqlRutas = "SELECT DISTINCT
                     r.id_ruta,
                     r.nombre,
                     r.descripcion,
@@ -49,15 +45,11 @@ try {
                 FROM ruta r
                 WHERE " . implode(" AND ", $where) . "
                 ORDER BY r.tipo, r.nombre";
-
     $stmtRutas = $pdo->prepare($sqlRutas);
     $stmtRutas->execute($params);
     $rutas = $stmtRutas->fetchAll(PDO::FETCH_ASSOC);
 
-    $sqlPuntos = "SELECT
-                        p.latitud,
-                        p.longitud,
-                        rp.orden
+    $sqlPuntos = "SELECT p.latitud, p.longitud, rp.orden
                     FROM ruta_parada rp
                     INNER JOIN parada p ON p.id_parada = rp.id_parada
                     WHERE rp.id_ruta = :id_ruta
@@ -65,79 +57,55 @@ try {
     $stmtPuntos = $pdo->prepare($sqlPuntos);
 
     $features = [];
-
     foreach ($rutas as $ruta) {
         $idR = (int) $ruta['id_ruta'];
         $stmtPuntos->execute([':id_ruta' => $idR]);
         $puntos = $stmtPuntos->fetchAll(PDO::FETCH_ASSOC);
 
-        if (count($puntos) < 2) continue;
-
         $coords = [];
         foreach ($puntos as $pt) {
-            $lat = (float) $pt['latitud'];
-            $lng = (float) $pt['longitud'];
-            if ($lat !== 0.0 && $lng !== 0.0) {
-                $coords[] = [$lng, $lat];
-            }
+            $lat = (float)$pt['latitud'];
+            $lng = (float)$pt['longitud'];
+            if ($lat !== 0.0 && $lng !== 0.0) $coords[] = [$lng, $lat];
         }
         if (count($coords) < 2) continue;
 
         $color = $ruta['color_hex'];
         if (empty($color)) {
-            $esVuelta = stripos($ruta['nombre'], 'vuelta') !== false;
-            $color = $esVuelta ? '#2980B9' : '#E74C3C';
+            $color = (stripos($ruta['nombre'], 'vuelta') !== false) ? '#2980B9' : '#E74C3C';
         }
         $esIda    = stripos($ruta['nombre'], 'ida') !== false;
         $esVuelta = stripos($ruta['nombre'], 'vuelta') !== false;
-        $label    = $esIda ? '🟢 IDA' : ($esVuelta ? '🔵 VUELTA' : '📍 RUTA');
-
-        $descriptionHtml = "<strong>" . htmlspecialchars($ruta['nombre'], ENT_QUOTES, 'UTF-8') . "</strong>";
-        $descriptionHtml .= "<br>{$label} · " . count($coords) . " paradas";
-        if (!empty($ruta['descripcion'])) {
-            $descriptionHtml .= "<br><br>" . htmlspecialchars($ruta['descripcion'], ENT_QUOTES, 'UTF-8');
-        }
+        $label    = $esIda ? '🟢 IDA' : ($esVuelta ? '🔵 VUELTA' : '📍');
 
         $features[] = [
-            'type'       => 'Feature',
-            'geometry'   => [
-                'type'        => 'LineString',
-                'coordinates' => $coords,
-            ],
+            'type'     => 'Feature',
+            'geometry' => ['type'=>'LineString','coordinates'=>$coords],
             'properties' => [
                 'name'        => $ruta['nombre'],
                 'title'       => $ruta['nombre'],
-                'description' => $descriptionHtml,
+                'description' => "<strong>" . htmlspecialchars($ruta['nombre']) . "</strong><br>{$label} · " . count($coords) . " paradas" . (!empty($ruta['descripcion']) ? "<br><br>" . htmlspecialchars($ruta['descripcion']) : ""),
                 'id_ruta'     => $idR,
                 'tipo'        => $ruta['tipo'] ?? 'minibus',
                 'color'       => $color,
                 'stroke'      => $color,
                 'stroke-width' => 5,
-                'stroke-opacity' => 0.9,
-                '_umap_options' => [
-                    'color'  => $color,
-                    'weight' => 5,
-                    'opacity' => 0.9,
-                ],
+                '_umap_options' => ['color' => $color, 'weight' => 5, 'opacity' => 0.9],
             ],
         ];
     }
 
-    $total = count($features);
-    $generado = date('c');
-
     echo json_encode([
-        'type'     => 'FeatureCollection',
-        'name'     => 'Rutas de Transporte - La Paz',
-        'generator'=> 'turismo-api/' . $generado,
-        'totalFeatures' => $total,
-        'metadata' => [
-            'fuente'      => 'MySQL Aiven - tabla ruta + ruta_parada + parada',
-            'generado'    => $generado,
-            'total'       => $total,
-            'id_ruta'     => $idRuta,
-            'filtro_grupo' => $grupo,
-            'tipo'        => $tipoRuta,
+        'type'          => 'FeatureCollection',
+        'name'          => 'Rutas de Transporte - La Paz',
+        'totalFeatures' => count($features),
+        'metadata'      => [
+            'fuente'       => 'MySQL Aiven - ruta + ruta_parada + parada + lugar_turistico',
+            'generado'     => date('c'),
+            'total'        => count($features),
+            'id_ruta'      => $idRuta,
+            'grupo_lugar'  => $grupo,
+            'tipo'         => $tipoRuta,
         ],
         'features' => $features,
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
@@ -145,10 +113,7 @@ try {
 } catch (Exception $e) {
     http_response_code(500);
     echo json_encode([
-        'type'     => 'FeatureCollection',
-        'name'     => 'Error',
-        'features' => [],
-        'error'    => $e->getMessage(),
+        'type'=>'FeatureCollection','error'=>$e->getMessage(),'features'=>[]
     ], JSON_UNESCAPED_UNICODE);
 }
 ?>
