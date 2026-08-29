@@ -2,7 +2,7 @@
 /**
  * sincronizar.php - VERSIÓN QUE OBTIENE COORDENADAS DE CADA CAPA
  * ----------------------------------------------------
- * 1. Obtiene metadatos del mapa (grupos y capas)
+ * 1. Obtiene metadatos del mapa desde la URL correcta
  * 2. Para cada capa, descarga el GeoJSON individual
  * 3. Extrae coordenadas de puntos y líneas
  */
@@ -36,12 +36,12 @@ if (empty($DB_PASS)) {
 }
 
 // =========================================================================
-// CONFIGURACIÓN DE UMAP
+// CONFIGURACIÓN DE UMAP - URLS CORRECTAS
 // =========================================================================
 define('UMAP_MAP_ID', 1447967);
 define('UMAP_TIMEOUT', 120);
 
-// URL de metadatos (estructura del mapa)
+// ⭐ URL CORRECTA para metadatos del mapa
 $METADATA_URL = "https://umap.openstreetmap.fr/es/map/" . UMAP_MAP_ID . "/geojson/";
 
 // =========================================================================
@@ -240,69 +240,125 @@ try {
     $jsonRaw = descargar_url($METADATA_URL);
     $mapData = json_decode($jsonRaw, true);
     
-    if (empty($mapData['datalayers'])) {
+    // Verificar que tenemos datos válidos
+    if (empty($mapData)) {
+        throw new Exception("No se pudieron obtener los metadatos del mapa.");
+    }
+    
+    // Buscar los datalayers en la estructura correcta
+    $datalayers = [];
+    
+    // Si el JSON tiene la estructura de uMap
+    if (isset($mapData['datalayers'])) {
+        $datalayers = $mapData['datalayers'];
+    } elseif (isset($mapData['features'])) {
+        // Buscar en las propiedades de los features
+        foreach ($mapData['features'] as $feature) {
+            if (!empty($feature['properties']['datalayers'])) {
+                $datalayers = $feature['properties']['datalayers'];
+                break;
+            }
+        }
+    }
+    
+    // Si no encontramos datalayers, buscar en cualquier propiedad
+    if (empty($datalayers)) {
+        foreach ($mapData as $key => $value) {
+            if ($key === 'datalayers' || str_contains($key, 'datalayer')) {
+                $datalayers = $value;
+                break;
+            }
+        }
+    }
+    
+    if (empty($datalayers)) {
         throw new Exception("No se encontraron capas en los metadatos del mapa.");
     }
     
-    $stats['total_grupos'] = count($mapData['datalayers']);
+    $stats['total_grupos'] = count($datalayers);
     
-    // 2. Procesar cada grupo
-    foreach ($mapData['datalayers'] as $grupo) {
-        $nombreGrupo = $grupo['properties']['name'] ?? 'Sin nombre';
-        $grupoId = $grupo['id'];
+    // 2. Procesar cada grupo/capa
+    foreach ($datalayers as $grupo) {
+        // Obtener nombre del grupo
+        $nombreGrupo = 'Sin nombre';
+        if (isset($grupo['properties']['name'])) {
+            $nombreGrupo = $grupo['properties']['name'];
+        } elseif (isset($grupo['name'])) {
+            $nombreGrupo = $grupo['name'];
+        }
+        
+        $grupoId = $grupo['id'] ?? '';
         $grupoDescripcion = limpiar_descripcion($grupo['properties']['description'] ?? null);
         
-        // 2a. Procesar las capas dentro del grupo
+        // Verificar si este grupo tiene capas hijas (layers)
+        $capas = [];
         if (!empty($grupo['layers'])) {
-            foreach ($grupo['layers'] as $capa) {
-                $stats['total_capas']++;
-                $nombreCapa = $capa['properties']['name'] ?? 'Sin nombre';
-                $capaId = $capa['id'];
-                $capaDescripcion = limpiar_descripcion($capa['properties']['description'] ?? null);
-                
-                // Obtener el GeoJSON de la capa
-                $geojson = obtener_geojson_capa(UMAP_MAP_ID, $capaId);
-                
-                if ($geojson && !empty($geojson['features'])) {
-                    foreach ($geojson['features'] as $feature) {
-                        $gtype = $feature['geometry']['type'] ?? '';
-                        $coords = $feature['geometry']['coordinates'] ?? [];
+            $capas = $grupo['layers'];
+        } elseif (!empty($grupo['id'])) {
+            // Si es una capa individual, la procesamos directamente
+            $capas = [$grupo];
+        }
+        
+        // Si no hay capas, pero el grupo tiene un punto o línea, procesarlo como capa
+        if (empty($capas) && !empty($grupo['geojson'])) {
+            $capas = [$grupo];
+        }
+        
+        foreach ($capas as $capa) {
+            $stats['total_capas']++;
+            
+            $nombreCapa = $capa['properties']['name'] ?? $capa['name'] ?? 'Sin nombre';
+            $capaId = $capa['id'] ?? '';
+            $capaDescripcion = limpiar_descripcion($capa['properties']['description'] ?? null);
+            
+            if (empty($capaId)) {
+                continue;
+            }
+            
+            // Obtener el GeoJSON de la capa
+            $geojson = obtener_geojson_capa(UMAP_MAP_ID, $capaId);
+            
+            if ($geojson && !empty($geojson['features'])) {
+                foreach ($geojson['features'] as $feature) {
+                    $gtype = $feature['geometry']['type'] ?? '';
+                    $coords = $feature['geometry']['coordinates'] ?? [];
+                    
+                    if ($gtype === 'Point' && !empty($coords)) {
+                        // PUNTO → LUGAR TURÍSTICO
+                        $stats['total_puntos']++;
+                        $lat = $coords[1] ?? 0;
+                        $lng = $coords[0] ?? 0;
                         
-                        if ($gtype === 'Point' && !empty($coords)) {
-                            // PUNTO → LUGAR TURÍSTICO
-                            $stats['total_puntos']++;
-                            $lat = $coords[1] ?? 0;
-                            $lng = $coords[0] ?? 0;
-                            
-                            if ($lat != 0 && $lng != 0) {
-                                $idLugar = upsert_lugar($pdo, [
-                                    'id_umap' => $capaId,
-                                    'nombre' => $nombreCapa,
-                                    'grupo_umap' => $nombreGrupo,
-                                    'latitud' => $lat,
-                                    'longitud' => $lng,
-                                    'descripcion' => $capaDescripcion ?: $grupoDescripcion,
-                                ], $stats);
-                            }
-                            
-                        } elseif ($gtype === 'LineString' && count($coords) >= 2) {
-                            // LÍNEA → RUTA
-                            $stats['total_lineas']++;
-                            $sentido = detectar_sentido($nombreCapa);
-                            $color = ($sentido === 'VUELTA') ? '#2980B9' : '#E74C3C';
-                            
-                            $idRuta = upsert_ruta($pdo, [
-                                'id_umap' => $capaId,
+                        if ($lat != 0 && $lng != 0) {
+                            $idLugar = upsert_lugar($pdo, [
+                                'id_umap' => $capaId . '_point',
                                 'nombre' => $nombreCapa,
-                                'sentido' => $sentido,
-                                'color_hex' => $color,
-                                'descripcion' => $capaDescripcion,
+                                'grupo_umap' => $nombreGrupo,
+                                'latitud' => $lat,
+                                'longitud' => $lng,
+                                'descripcion' => $capaDescripcion ?: $grupoDescripcion,
                             ], $stats);
-                            
-                            asociar_ruta_lugar($pdo, $idRuta, $nombreCapa, $stats);
                         }
+                        
+                    } elseif ($gtype === 'LineString' && count($coords) >= 2) {
+                        // LÍNEA → RUTA
+                        $stats['total_lineas']++;
+                        $sentido = detectar_sentido($nombreCapa);
+                        $color = ($sentido === 'VUELTA') ? '#2980B9' : '#E74C3C';
+                        
+                        $idRuta = upsert_ruta($pdo, [
+                            'id_umap' => $capaId,
+                            'nombre' => $nombreCapa,
+                            'sentido' => $sentido,
+                            'color_hex' => $color,
+                            'descripcion' => $capaDescripcion,
+                        ], $stats);
+                        
+                        asociar_ruta_lugar($pdo, $idRuta, $nombreCapa, $stats);
                     }
                 }
+            } else {
+                $stats['warnings'][] = "No se pudieron obtener datos de la capa: {$nombreCapa} ({$capaId})";
             }
         }
     }
