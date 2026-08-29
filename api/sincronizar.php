@@ -1,9 +1,10 @@
 <?php
 /**
- * sincronizar.php - VERSIÓN QUE LEE METADATOS DEL MAPA
+ * sincronizar.php - VERSIÓN QUE OBTIENE COORDENADAS DE CADA CAPA
  * ----------------------------------------------------
- * Obtiene las coordenadas de las capas desde la API de uMap
- * usando los metadatos del mapa (que sí funcionan)
+ * 1. Obtiene metadatos del mapa (grupos y capas)
+ * 2. Para cada capa, descarga el GeoJSON individual
+ * 3. Extrae coordenadas de puntos y líneas
  */
 
 // =========================================================================
@@ -40,15 +41,17 @@ if (empty($DB_PASS)) {
 define('UMAP_MAP_ID', 1447967);
 define('UMAP_TIMEOUT', 120);
 
-// URL de metadatos (esta SÍ funciona)
-$METADATA_URL = "https://umap.openstreetmap.fr/es/map/{$MAP_ID}/geojson/";
+// URL de metadatos (estructura del mapa)
+$METADATA_URL = "https://umap.openstreetmap.fr/es/map/" . UMAP_MAP_ID . "/geojson/";
 
 // =========================================================================
 // ESTADÍSTICAS
 // =========================================================================
 $stats = [
     'total_grupos'   => 0,
-    'total_rutas'    => 0,
+    'total_capas'    => 0,
+    'total_puntos'   => 0,
+    'total_lineas'   => 0,
     'lugares_insert' => 0,
     'rutas_insert'   => 0,
     'ruta_lugar_ok'  => 0,
@@ -77,154 +80,152 @@ try {
 // FUNCIONES
 // =========================================================================
 
+/**
+ * Descarga una URL con cURL
+ */
 function descargar_url(string $url): string {
-    if (function_exists('curl_init')) {
-        $ch = curl_init($url);
-        curl_setopt_array($ch, [
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_TIMEOUT        => UMAP_TIMEOUT,
-            CURLOPT_SSL_VERIFYPEER => false,
-            CURLOPT_USERAGENT      => 'Mozilla/5.0 (TurismoAPI-sync)',
-            CURLOPT_HTTPHEADER     => ['Accept: application/json'],
-        ]);
-        $resp = curl_exec($ch);
-        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $err  = curl_error($ch);
-        curl_close($ch);
-        if ($resp === false || $code < 200 || $code >= 400) {
-            throw new Exception("Fallo al descargar {$url} (HTTP {$code}). {$err}");
-        }
-        return $resp;
-    }
-    $ctx = stream_context_create([
-        'http' => [
-            'timeout' => UMAP_TIMEOUT,
-            'header'  => "User-Agent: TurismoAPI-sync\r\nAccept: application/json\r\n",
-        ],
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_TIMEOUT        => UMAP_TIMEOUT,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_USERAGENT      => 'Mozilla/5.0 (TurismoAPI-sync)',
+        CURLOPT_HTTPHEADER     => ['Accept: application/json'],
     ]);
-    $resp = @file_get_contents($url, false, $ctx);
-    if ($resp === false) {
-        throw new Exception("Fallo al descargar {$url} (file_get_contents).");
+    $resp = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $err  = curl_error($ch);
+    curl_close($ch);
+    if ($resp === false || $code < 200 || $code >= 400) {
+        throw new Exception("Fallo al descargar {$url} (HTTP {$code}). {$err}");
     }
     return $resp;
 }
 
 /**
- * Obtiene las coordenadas de una capa específica
+ * Obtiene el GeoJSON de una capa específica
  */
-function obtener_coordenadas_capa(int $mapId, string $datalayerId): ?array {
+function obtener_geojson_capa(int $mapId, string $datalayerId): ?array {
     $url = "https://umap.openstreetmap.fr/es/datalayer/{$mapId}/{$datalayerId}/?format=geojson";
     try {
         $data = descargar_url($url);
         $geo = json_decode($data, true);
         if (!empty($geo['features'])) {
-            return $geo['features'];
+            return $geo;
         }
     } catch (Exception $e) {
-        // Silencioso
+        // Silencioso - la capa puede no tener datos
     }
     return null;
 }
 
+/**
+ * Detecta sentido IDA/VUELTA del nombre
+ */
 function detectar_sentido(string $nombre): string {
     $n = mb_strtolower($nombre, 'UTF-8');
-    $ida    = str_contains($n, 'ida');
-    $vuelta = str_contains($n, 'vuelta');
-    if ($ida && !$vuelta) return 'IDA';
-    if ($vuelta && !$ida) return 'VUELTA';
-    if ($ida && $vuelta) {
-        return (mb_strrpos($n, 'vuelta') > mb_strrpos($n, 'ida')) ? 'VUELTA' : 'IDA';
+    if (str_contains($n, 'ida') && !str_contains($n, 'vuelta')) return 'IDA';
+    if (str_contains($n, 'vuelta') && !str_contains($n, 'ida')) return 'VUELTA';
+    if (str_contains($n, 'ida') && str_contains($n, 'vuelta')) {
+        return strpos($n, 'vuelta') > strpos($n, 'ida') ? 'VUELTA' : 'IDA';
     }
     return 'NORMAL';
 }
 
+/**
+ * Extrae nombre del lugar entre paréntesis
+ */
 function extraer_grupo_parentesis(string $nombre): array {
-    $out = [];
-    if (preg_match_all('/\(([^)]+)\)/u', $nombre, $matches)) {
-        foreach ($matches[1] as $m) {
-            $l = trim($m);
-            if ($l !== '') $out[] = $l;
-        }
-    }
-    return $out;
+    preg_match_all('/\(([^)]+)\)/u', $nombre, $m);
+    return array_map('trim', $m[1] ?? []);
 }
 
+/**
+ * Limpia descripción de HTML
+ */
+function limpiar_descripcion(?string $texto): ?string {
+    if ($texto) {
+        return strip_tags($texto);
+    }
+    return null;
+}
+
+/**
+ * UPSERT lugar_turistico
+ */
 function upsert_lugar(PDO $pdo, array $datos, array &$stats): int {
     $sel = $pdo->prepare("SELECT id_lugar FROM lugar_turistico WHERE id_umap = ? LIMIT 1");
     $sel->execute([$datos['id_umap']]);
     $id = $sel->fetchColumn();
 
-    if (!$id) {
-        $sel2 = $pdo->prepare("SELECT id_lugar FROM lugar_turistico WHERE latitud = ? AND longitud = ? LIMIT 1");
-        $sel2->execute([$datos['latitud'], $datos['longitud']]);
-        $id = $sel2->fetchColumn();
-    }
-
     if ($id) {
         $sql = "UPDATE lugar_turistico
-                SET nombre=?, grupo_umap=?, latitud=?, longitud=?
+                SET nombre=?, grupo_umap=?, latitud=?, longitud=?, descripcion=?
                 WHERE id_lugar = ?";
         $pdo->prepare($sql)->execute([
             $datos['nombre'], $datos['grupo_umap'],
             $datos['latitud'], $datos['longitud'],
+            $datos['descripcion'] ?? null,
             (int)$id,
         ]);
         return (int)$id;
     }
 
     $sql = "INSERT INTO lugar_turistico
-            (nombre, grupo_umap, latitud, longitud, id_umap, activo)
-            VALUES (?,?,?,?,?,1)";
+            (nombre, grupo_umap, latitud, longitud, descripcion, id_umap, activo)
+            VALUES (?,?,?,?,?,?,1)";
     $pdo->prepare($sql)->execute([
         $datos['nombre'], $datos['grupo_umap'],
         $datos['latitud'], $datos['longitud'],
+        $datos['descripcion'] ?? null,
         $datos['id_umap'],
     ]);
     $stats['lugares_insert']++;
     return (int)$pdo->lastInsertId();
 }
 
+/**
+ * UPSERT ruta
+ */
 function upsert_ruta(PDO $pdo, array $datos, array &$stats): int {
     $sel = $pdo->prepare("SELECT id_ruta FROM ruta WHERE id_umap = ? LIMIT 1");
     $sel->execute([$datos['id_umap']]);
     $id = $sel->fetchColumn();
 
-    if (!$id && !empty($datos['nombre'])) {
-        $sel2 = $pdo->prepare("SELECT id_ruta FROM ruta WHERE nombre = ? LIMIT 1");
-        $sel2->execute([$datos['nombre']]);
-        $id = $sel2->fetchColumn();
-    }
-
     if ($id) {
-        $sql = "UPDATE ruta SET nombre=?, sentido=?, color_hex=?, activo=1 WHERE id_ruta=?";
+        $sql = "UPDATE ruta SET nombre=?, sentido=?, color_hex=?, descripcion=? WHERE id_ruta=?";
         $pdo->prepare($sql)->execute([
             $datos['nombre'], $datos['sentido'],
-            $datos['color_hex'], (int)$id,
+            $datos['color_hex'], $datos['descripcion'] ?? null,
+            (int)$id,
         ]);
         return (int)$id;
     }
 
-    $sql = "INSERT INTO ruta (nombre, sentido, color_hex, id_umap, activo)
-            VALUES (?,?,?,?,1)";
+    $sql = "INSERT INTO ruta (nombre, sentido, color_hex, descripcion, id_umap, activo)
+            VALUES (?,?,?,?,?,1)";
     $pdo->prepare($sql)->execute([
         $datos['nombre'], $datos['sentido'],
-        $datos['color_hex'], $datos['id_umap'],
+        $datos['color_hex'], $datos['descripcion'] ?? null,
+        $datos['id_umap'],
     ]);
     $stats['rutas_insert']++;
     return (int)$pdo->lastInsertId();
 }
 
+/**
+ * Asocia una ruta con sus lugares (por nombre entre paréntesis)
+ */
 function asociar_ruta_lugar(PDO $pdo, int $idRuta, string $nombre, array &$stats): void {
-    $pdo->prepare("DELETE FROM ruta_lugar WHERE id_ruta = ?")->execute([$idRuta]);
-    
     $candidatos = extraer_grupo_parentesis($nombre);
     foreach ($candidatos as $c) {
         $sel = $pdo->prepare("SELECT id_lugar FROM lugar_turistico WHERE grupo_umap LIKE ? OR nombre LIKE ? LIMIT 1");
         $sel->execute(["%$c%", "%$c%"]);
         $idL = $sel->fetchColumn();
         if ($idL) {
-            $pdo->prepare("INSERT IGNORE INTO ruta_lugar (id_ruta,id_lugar) VALUES (?,?)")->execute([$idRuta, $idL]);
+            $pdo->prepare("INSERT IGNORE INTO ruta_lugar (id_ruta, id_lugar) VALUES (?,?)")
+                ->execute([$idRuta, $idL]);
             $stats['ruta_lugar_ok']++;
         }
     }
@@ -249,23 +250,44 @@ try {
     foreach ($mapData['datalayers'] as $grupo) {
         $nombreGrupo = $grupo['properties']['name'] ?? 'Sin nombre';
         $grupoId = $grupo['id'];
+        $grupoDescripcion = limpiar_descripcion($grupo['properties']['description'] ?? null);
         
         // 2a. Procesar las capas dentro del grupo
         if (!empty($grupo['layers'])) {
             foreach ($grupo['layers'] as $capa) {
+                $stats['total_capas']++;
                 $nombreCapa = $capa['properties']['name'] ?? 'Sin nombre';
                 $capaId = $capa['id'];
+                $capaDescripcion = limpiar_descripcion($capa['properties']['description'] ?? null);
                 
-                // Obtener coordenadas de la capa
-                $features = obtener_coordenadas_capa(UMAP_MAP_ID, $capaId);
+                // Obtener el GeoJSON de la capa
+                $geojson = obtener_geojson_capa(UMAP_MAP_ID, $capaId);
                 
-                if ($features) {
-                    foreach ($features as $feature) {
+                if ($geojson && !empty($geojson['features'])) {
+                    foreach ($geojson['features'] as $feature) {
                         $gtype = $feature['geometry']['type'] ?? '';
                         $coords = $feature['geometry']['coordinates'] ?? [];
                         
-                        if ($gtype === 'LineString' && count($coords) >= 2) {
-                            // Es una RUTA (línea)
+                        if ($gtype === 'Point' && !empty($coords)) {
+                            // PUNTO → LUGAR TURÍSTICO
+                            $stats['total_puntos']++;
+                            $lat = $coords[1] ?? 0;
+                            $lng = $coords[0] ?? 0;
+                            
+                            if ($lat != 0 && $lng != 0) {
+                                $idLugar = upsert_lugar($pdo, [
+                                    'id_umap' => $capaId,
+                                    'nombre' => $nombreCapa,
+                                    'grupo_umap' => $nombreGrupo,
+                                    'latitud' => $lat,
+                                    'longitud' => $lng,
+                                    'descripcion' => $capaDescripcion ?: $grupoDescripcion,
+                                ], $stats);
+                            }
+                            
+                        } elseif ($gtype === 'LineString' && count($coords) >= 2) {
+                            // LÍNEA → RUTA
+                            $stats['total_lineas']++;
                             $sentido = detectar_sentido($nombreCapa);
                             $color = ($sentido === 'VUELTA') ? '#2980B9' : '#E74C3C';
                             
@@ -274,39 +296,10 @@ try {
                                 'nombre' => $nombreCapa,
                                 'sentido' => $sentido,
                                 'color_hex' => $color,
+                                'descripcion' => $capaDescripcion,
                             ], $stats);
                             
                             asociar_ruta_lugar($pdo, $idRuta, $nombreCapa, $stats);
-                            $stats['total_rutas']++;
-                        }
-                    }
-                }
-            }
-        }
-        
-        // 2b. Si el grupo tiene un punto, crear lugar
-        // Buscar un punto en las capas del grupo
-        if (!empty($grupo['layers'])) {
-            foreach ($grupo['layers'] as $capa) {
-                $capaId = $capa['id'];
-                $features = obtener_coordenadas_capa(UMAP_MAP_ID, $capaId);
-                if ($features) {
-                    foreach ($features as $feature) {
-                        if ($feature['geometry']['type'] === 'Point') {
-                            $coords = $feature['geometry']['coordinates'];
-                            $lat = $coords[1] ?? 0;
-                            $lng = $coords[0] ?? 0;
-                            
-                            if ($lat != 0 && $lng != 0) {
-                                upsert_lugar($pdo, [
-                                    'id_umap' => 'grupo_' . $grupoId,
-                                    'nombre' => $nombreGrupo,
-                                    'grupo_umap' => $nombreGrupo,
-                                    'latitud' => $lat,
-                                    'longitud' => $lng,
-                                ], $stats);
-                                break 2; // Salir de ambos loops
-                            }
                         }
                     }
                 }
@@ -316,10 +309,11 @@ try {
     
     // 3. Guardar log
     $pdo->prepare("INSERT INTO sincronizacion_log
-            (origen,status,total_leidos,lugares_insert,rutas_insert,ruta_lugar_ok,error_msg)
+            (origen, status, total_leidos, lugares_insert, rutas_insert, ruta_lugar_ok, error_msg)
             VALUES (?,?,?,?,?,?,?)")
         ->execute([
-            'umap#' . UMAP_MAP_ID, 'OK',
+            'umap#' . UMAP_MAP_ID,
+            'OK',
             (int)$stats['total_grupos'],
             (int)$stats['lugares_insert'],
             (int)$stats['rutas_insert'],
@@ -331,7 +325,6 @@ try {
     echo json_encode([
         'success' => true,
         'map_id' => UMAP_MAP_ID,
-        'url_metadatos' => $METADATA_URL,
         'stats' => $stats,
         'mensaje' => "Sincronización OK. {$stats['lugares_insert']} lugares · {$stats['rutas_insert']} rutas · {$stats['ruta_lugar_ok']} asociaciones",
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
@@ -342,10 +335,11 @@ try {
     try {
         if (isset($pdo)) {
             $pdo->prepare("INSERT INTO sincronizacion_log
-                    (origen,status,total_leidos,lugares_insert,rutas_insert,ruta_lugar_ok,error_msg)
+                    (origen, status, total_leidos, lugares_insert, rutas_insert, ruta_lugar_ok, error_msg)
                     VALUES (?,?,?,?,?,?,?)")
                 ->execute([
-                    'umap#' . UMAP_MAP_ID, 'ERROR',
+                    'umap#' . UMAP_MAP_ID,
+                    'ERROR',
                     (int)$stats['total_grupos'],
                     (int)$stats['lugares_insert'],
                     (int)$stats['rutas_insert'],
