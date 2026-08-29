@@ -6,6 +6,7 @@ header('Access-Control-Allow-Methods: POST, GET, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, Authorization');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
     exit(0);
 }
 
@@ -35,49 +36,58 @@ $carnet = $data['carnet'] ?? '';
 $perfilCompleto = isset($data['perfil_completo']) ? (int)$data['perfil_completo'] : 0;
 
 if (empty($email) || empty($nombre) || empty($firebaseUid)) {
-    logDebug("ERROR: Faltan datos");
-    echo json_encode(['success' => false, 'error' => 'Faltan datos requeridos']);
+    logDebug("ERROR: Faltan datos requeridos");
+    echo json_encode([
+        'success' => false, 
+        'error' => 'Faltan datos requeridos: email, nombre y firebase_uid son obligatorios'
+    ]);
     exit;
 }
 
 try {
-    // Verificar si la tabla existe
-    $checkTable = $pdo->query("SHOW TABLES LIKE 'usuario'");
-    if ($checkTable->rowCount() == 0) {
-        logDebug("ERROR: Tabla 'usuario' no existe");
-        echo json_encode(['success' => false, 'error' => 'Tabla usuario no existe']);
+    // Verificar conexión a BD
+    if (!$pdo) {
+        logDebug("ERROR: No hay conexión a la base de datos");
+        echo json_encode(['success' => false, 'error' => 'Error de conexión a la base de datos']);
         exit;
     }
 
     // Verificar/crear columnas necesarias
     $columns = ['telefono', 'carnet', 'perfil_completo', 'foto_perfil'];
     foreach ($columns as $col) {
-        $check = $pdo->query("SHOW COLUMNS FROM usuario LIKE '$col'");
-        if ($check->rowCount() == 0) {
-            $type = $col === 'perfil_completo' ? 'TINYINT(1) NOT NULL DEFAULT 0' : 'VARCHAR(255) NULL DEFAULT NULL';
-            $pdo->exec("ALTER TABLE usuario ADD COLUMN $col $type");
-            logDebug("✅ Campo $col creado");
+        try {
+            $check = $pdo->query("SHOW COLUMNS FROM usuario LIKE '$col'");
+            if ($check->rowCount() == 0) {
+                $type = $col === 'perfil_completo' ? 'TINYINT(1) NOT NULL DEFAULT 0' : 'VARCHAR(255) NULL DEFAULT NULL';
+                $pdo->exec("ALTER TABLE usuario ADD COLUMN $col $type");
+                logDebug("✅ Campo $col creado");
+            }
+        } catch (Exception $e) {
+            logDebug("⚠️ Error al verificar/crear columna $col: " . $e->getMessage());
         }
     }
 
-    // Buscar usuario existente
+    // BUSCAR USUARIO EXISTENTE
     $query = "SELECT * FROM usuario WHERE firebase_uid = ? OR email = ?";
     $stmt = $pdo->prepare($query);
     $stmt->execute([$firebaseUid, $email]);
     $usuarioExistente = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if ($usuarioExistente) {
-        // ✅ PRESERVAR nombre personalizado
+        logDebug("📌 Usuario existente encontrado: ID " . $usuarioExistente['id_usuario']);
+        
+        // Preservar nombre personalizado si existe
         $nombreFinal = $nombre;
         if (!empty($usuarioExistente['nombre']) && $usuarioExistente['nombre'] != 'Usuario') {
             $nombreFinal = $usuarioExistente['nombre'];
-            logDebug("✅ Preservando nombre: $nombreFinal");
+            logDebug("✅ Preservando nombre existente: $nombreFinal");
         }
 
-        // ✅ PRESERVAR perfil_completo si ya estaba en 1
+        // Preservar perfil_completo si ya estaba en 1
         $perfilFinal = ($usuarioExistente['perfil_completo'] == 1) ? 1 : $perfilCompleto;
         logDebug("✅ perfil_completo final: $perfilFinal");
 
+        // ACTUALIZAR USUARIO EXISTENTE
         $query = "UPDATE usuario SET
                   nombre = ?,
                   email = ?,
@@ -91,15 +101,23 @@ try {
                   WHERE id_usuario = ?";
         $stmt = $pdo->prepare($query);
         $stmt->execute([
-            $nombreFinal, $email, $firebaseUid, $photoUrl,
-            $telefono, $carnet, $perfilFinal, $usuarioExistente['id_usuario']
+            $nombreFinal, 
+            $email, 
+            $firebaseUid, 
+            $photoUrl,
+            $telefono, 
+            $carnet, 
+            $perfilFinal, 
+            $usuarioExistente['id_usuario']
         ]);
 
         $userId = $usuarioExistente['id_usuario'];
         $isNew = false;
-        logDebug("✅ Usuario actualizado: $email, perfil_completo: $perfilFinal");
+        logDebug("✅ Usuario actualizado correctamente");
 
     } else {
+        logDebug("📌 Creando nuevo usuario");
+        
         // CREAR NUEVO USUARIO
         $query = "INSERT INTO usuario (
                     email, nombre, firebase_uid, foto_perfil,
@@ -110,16 +128,21 @@ try {
                   )";
         $stmt = $pdo->prepare($query);
         $stmt->execute([
-            $email, $nombre, $firebaseUid, $photoUrl,
-            $telefono, $carnet, $perfilCompleto
+            $email, 
+            $nombre, 
+            $firebaseUid, 
+            $photoUrl,
+            $telefono, 
+            $carnet, 
+            $perfilCompleto
         ]);
 
         $userId = $pdo->lastInsertId();
         $isNew = true;
-        logDebug("✅ Nuevo usuario creado: $email, perfil_completo: $perfilCompleto");
+        logDebug("✅ Nuevo usuario creado con ID: $userId");
     }
 
-    // Generar token
+    // GENERAR TOKEN
     $token = bin2hex(random_bytes(32));
 
     // Desactivar sesiones anteriores
@@ -131,21 +154,28 @@ try {
                            VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 30 DAY), 1)");
     $stmt->execute([$userId, $token]);
 
-    // Obtener datos finales CON TODOS LOS CAMPOS
+    // OBTENER DATOS FINALES DEL USUARIO
     $query = "SELECT id_usuario, email, nombre, rol, foto_perfil, telefono, carnet, perfil_completo 
               FROM usuario WHERE id_usuario = ?";
     $stmt = $pdo->prepare($query);
     $stmt->execute([$userId]);
     $usuario = $stmt->fetch(PDO::FETCH_ASSOC);
 
-    // ✅ Asegurarse de que perfil_completo sea un entero (0 o 1)
+    if (!$usuario) {
+        logDebug("❌ Error: No se encontró el usuario después de guardar");
+        echo json_encode(['success' => false, 'error' => 'Error al recuperar los datos del usuario']);
+        exit;
+    }
+
+    // ✅ Asegurar que perfil_completo sea 0 o 1
     $perfilCompletoFinal = isset($usuario['perfil_completo']) ? (int)$usuario['perfil_completo'] : 0;
 
+    // ✅ RESPONDER CON TODOS LOS DATOS
     $response = [
         'success' => true,
         'token' => $token,
         'user' => [
-            'id' => $usuario['id_usuario'],
+            'id' => (int)$usuario['id_usuario'],
             'email' => $usuario['email'],
             'nombre' => $usuario['nombre'],
             'rol' => $usuario['rol'],
@@ -157,14 +187,20 @@ try {
         'is_new' => $isNew
     ];
 
-    logDebug("RESPUESTA: " . json_encode($response));
+    logDebug("✅ RESPUESTA ENVIADA: " . json_encode($response));
     echo json_encode($response);
 
 } catch (PDOException $e) {
-    logDebug("❌ PDOException: " . $e->getMessage());
-    echo json_encode(['success' => false, 'error' => 'Error en BD: ' . $e->getMessage()]);
+    logDebug("❌ PDOException: " . $e->getMessage() . " en " . $e->getFile() . " línea " . $e->getLine());
+    echo json_encode([
+        'success' => false, 
+        'error' => 'Error en la base de datos: ' . $e->getMessage()
+    ]);
 } catch (Exception $e) {
-    logDebug("❌ Exception: " . $e->getMessage());
-    echo json_encode(['success' => false, 'error' => 'Error: ' . $e->getMessage()]);
+    logDebug("❌ Exception: " . $e->getMessage() . " en " . $e->getFile() . " línea " . $e->getLine());
+    echo json_encode([
+        'success' => false, 
+        'error' => 'Error interno del servidor: ' . $e->getMessage()
+    ]);
 }
 ?>
