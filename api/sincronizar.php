@@ -1,9 +1,15 @@
 <?php
 /**
- * sincronizar.php - VERSIÓN CON VARIABLES DE ENTORNO
+ * sincronizar.php - VERSIÓN CORREGIDA
  * ----------------------------------------------------
- * Configuración segura desde variables de entorno de Render
+ * uMap (#1447967) es la FUENTE DE VERDAD.
  */
+
+// =========================================================================
+// CONFIGURACIÓN DE ERRORES - OCULTAR WARNINGS
+// =========================================================================
+error_reporting(E_ALL & ~E_DEPRECATED & ~E_WARNING);
+ini_set('display_errors', 0);
 
 header('Content-Type: application/json; charset=utf-8');
 header('Access-Control-Allow-Origin: *');
@@ -19,21 +25,23 @@ $DB_NAME = getenv('PDO_DATABASE') ?: 'defaultdb';
 $DB_USER = getenv('PDO_USERNAME') ?: 'avnadmin';
 $DB_PASS = getenv('PDO_PASSWORD') ?: '';
 
-// Verificar que la contraseña está configurada
 if (empty($DB_PASS)) {
     echo json_encode([
         'success' => false,
-        'error' => 'Error: PDO_PASSWORD no está configurada en las variables de entorno.'
+        'error' => 'Error: PDO_PASSWORD no está configurada en variables de entorno.'
     ]);
     exit;
 }
 
 // =========================================================================
-// CONFIGURACIÓN DE UMAP
+// CONFIGURACIÓN DE UMAP - URL CORRECTA
 // =========================================================================
 define('UMAP_MAP_ID', 1447967);
 define('UMAP_LANG', 'es');
 define('UMAP_TIMEOUT', 120);
+
+// URL CORRECTA con el nombre del mapa
+$UMAP_URL = 'https://umap.openstreetmap.fr/es/map/rutaslapaz_1447967/?format=geojson';
 
 // =========================================================================
 // ESTADÍSTICAS
@@ -55,29 +63,16 @@ $stats = [
 ];
 
 // =========================================================================
-// CONEXIÓN A BASE DE DATOS (CON SSL)
+// CONEXIÓN A BASE DE DATOS
 // =========================================================================
 try {
-    // Obtener certificado CA si está en variables
-    $sslCa = getenv('PDO_SSL_CA') ?: null;
-    
-    $options = [
+    $dsn = "mysql:host=$DB_HOST;port=$DB_PORT;dbname=$DB_NAME;charset=utf8mb4";
+    $pdo = new PDO($dsn, $DB_USER, $DB_PASS, [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         PDO::ATTR_EMULATE_PREPARES => false,
-    ];
-    
-    // Si hay certificado CA, usarlo para SSL
-    if ($sslCa && file_exists($sslCa)) {
-        $options[PDO::MYSQL_ATTR_SSL_CA] = $sslCa;
-    } else {
-        // Si no hay certificado, confiar en el SSL de Aiven igual
-        $options[PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT] = false;
-    }
-    
-    $dsn = "mysql:host=$DB_HOST;port=$DB_PORT;dbname=$DB_NAME;charset=utf8mb4";
-    $pdo = new PDO($dsn, $DB_USER, $DB_PASS, $options);
-    
+        PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT => false,
+    ]);
 } catch (PDOException $e) {
     echo json_encode([
         'success' => false,
@@ -180,7 +175,7 @@ function limpiar_descripcion(array $props): ?string {
 }
 
 // =========================================================================
-// FUNCIONES DE UPSERT
+// FUNCIONES DE UPSERT (CORREGIDAS)
 // =========================================================================
 
 function upsert_lugar(PDO $pdo, array $datos, array &$stats): int {
@@ -258,7 +253,10 @@ function upsert_ruta(PDO $pdo, array $datos, array &$stats): int {
     return (int)$pdo->lastInsertId();
 }
 
-function upsert_parada(PDO $pdo, float $lat, float $lng, ?string $nombre = null, ?string $id_umap = null, array &$stats): int {
+// =========================================================================
+// FUNCIÓN upsert_parada CORREGIDA (parámetros en orden correcto)
+// =========================================================================
+function upsert_parada(PDO $pdo, float $lat, float $lng, ?string $nombre, ?string $id_umap, array &$stats): int {
     if ($id_umap) {
         $sel = $pdo->prepare("SELECT id_parada FROM parada WHERE id_umap = ? LIMIT 1");
         $sel->execute([$id_umap]);
@@ -351,9 +349,8 @@ function distancia_metros(float $lat1, float $lng1, float $lat2, float $lng2): f
 // =========================================================================
 
 try {
-    // 1) Descargar GeoJSON completo del mapa
-    $urlFull = sprintf('https://umap.openstreetmap.fr/%s/map/%d/?format=geojson', UMAP_LANG, UMAP_MAP_ID);
-    $jsonRaw = descargar_url($urlFull);
+    // Descargar GeoJSON con URL CORRECTA
+    $jsonRaw = descargar_url($UMAP_URL);
 
     $geo = json_decode($jsonRaw, true);
     if (!is_array($geo) || empty($geo['type']) || $geo['type'] !== 'FeatureCollection') {
@@ -363,7 +360,6 @@ try {
     $features = $geo['features'] ?? [];
     $stats['total_leidos'] = count($features);
 
-    // 2) Procesar features
     foreach ($features as $idx => $f) {
         if (empty($f['geometry'])) {
             $stats['warnings'][] = "Feature #{$idx}: sin geometry";
@@ -378,7 +374,6 @@ try {
         $dlayer_id = (string)($props['_datalayer_id'] ?? $props['datalayer_id'] ?? '');
 
         if ($gtype === 'Point') {
-            // PUNTO → lugar_turistico
             $stats['puntos_leidos']++;
             [$lng, $lat] = [$f['geometry']['coordinates'][0], $f['geometry']['coordinates'][1]];
             $categoria = trim((string)($props['categoria'] ?? $props['category'] ?? ($id_capa ?: 'Atracción turística')));
@@ -405,7 +400,6 @@ try {
             ], $stats);
 
         } elseif ($gtype === 'LineString') {
-            // LÍNEA → ruta + paradas
             $stats['lineas_leidas']++;
             $coordsLS = $f['geometry']['coordinates'] ?? [];
             if (count($coordsLS) < 2) {
@@ -434,16 +428,10 @@ try {
 
             reconstruir_ruta_parada($pdo, $idRuta, $coordsLS, $stats);
             asociar_ruta_lugar($pdo, $idRuta, $nombre, $id_capa, $coordsLS, $stats);
-
-        } elseif ($gtype === 'Polygon' || $gtype === 'MultiLineString' || $gtype === 'MultiPoint') {
-            $stats['poligonos_leidos']++;
-            $stats['warnings'][] = "Feature #{$idx} {$gtype}: soporte parcial";
-        } else {
-            $stats['warnings'][] = "Feature #{$idx}: tipo desconocido {$gtype}";
         }
     }
 
-    // 3) Guardar log
+    // Guardar log
     try {
         $pdo->prepare("INSERT INTO sincronizacion_log
                 (origen,status,total_leidos,lugares_insert,lugares_update,rutas_insert,rutas_update,paradas_insert,ruta_lugar_ok,ruta_parada_ok,error_msg)
@@ -457,23 +445,19 @@ try {
                 (int)$stats['ruta_lugar_ok'],  (int)$stats['ruta_parada_ok'],
                 null,
             ]);
-    } catch (Exception $e) {
-        // No crítico
-    }
+    } catch (Exception $e) {}
 
-    // 4) Respuesta
     echo json_encode([
         'success' => true,
         'map_id'  => UMAP_MAP_ID,
-        'url'     => $urlFull,
+        'url'     => $UMAP_URL,
         'stats'   => $stats,
-        'mensaje' => "Sincronización OK. {$stats['lugares_insert']} lugares nuevos · {$stats['rutas_insert']} rutas nuevas · {$stats['ruta_parada_ok']} paradas · {$stats['ruta_lugar_ok']} asociaciones",
+        'mensaje' => "Sincronización OK. {$stats['lugares_insert']} lugares · {$stats['rutas_insert']} rutas · {$stats['ruta_parada_ok']} paradas · {$stats['ruta_lugar_ok']} asociaciones",
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
 
 } catch (Throwable $e) {
     $err = $e->getMessage();
 
-    // Guardar error en log
     try {
         if (isset($pdo)) {
             $pdo->prepare("INSERT INTO sincronizacion_log
