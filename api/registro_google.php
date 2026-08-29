@@ -131,12 +131,15 @@ try {
                            VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 30 DAY), 1)");
     $stmt->execute([$userId, $token]);
 
-    // Obtener datos finales
+    // Obtener datos finales CON TODOS LOS CAMPOS
     $query = "SELECT id_usuario, email, nombre, rol, foto_perfil, telefono, carnet, perfil_completo 
               FROM usuario WHERE id_usuario = ?";
     $stmt = $pdo->prepare($query);
     $stmt->execute([$userId]);
     $usuario = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    // ✅ Asegurarse de que perfil_completo sea un entero (0 o 1)
+    $perfilCompletoFinal = isset($usuario['perfil_completo']) ? (int)$usuario['perfil_completo'] : 0;
 
     $response = [
         'success' => true,
@@ -149,7 +152,7 @@ try {
             'foto_perfil' => $usuario['foto_perfil'] ?? $photoUrl,
             'telefono' => $usuario['telefono'] ?? '',
             'carnet' => $usuario['carnet'] ?? '',
-            'perfil_completo' => (int)($usuario['perfil_completo'] ?? 0)
+            'perfil_completo' => $perfilCompletoFinal
         ],
         'is_new' => $isNew
     ];
