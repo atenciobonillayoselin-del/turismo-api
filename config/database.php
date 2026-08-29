@@ -51,7 +51,7 @@ try {
     $dsn = "mysql:host=$host;port=$port;dbname=$dbname;charset=utf8mb4";
 
     if (!empty($sslCa) && file_exists($sslCa)) {
-        $dsn .= ";sslmode=verify-ca;sslrootcert=" . escapeshellarg($sslCa);
+        $dsn .= ";sslmode=verify-ca;sslrootcert=" . $sslCa;
     }
 
     $options = [
