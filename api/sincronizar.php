@@ -1,8 +1,9 @@
 <?php
 /**
- * sincronizar.php - VERSIÓN CORREGIDA
+ * sincronizar.php - VERSIÓN CON ENLACE CORTO DE UMAP
  * ----------------------------------------------------
- * uMap (#1447967) es la FUENTE DE VERDAD.
+ * Usa el enlace corto: http://u.osmfr.org/m/1447967/
+ * Más confiable que la URL larga
  */
 
 // =========================================================================
@@ -34,14 +35,13 @@ if (empty($DB_PASS)) {
 }
 
 // =========================================================================
-// CONFIGURACIÓN DE UMAP - URL CORRECTA
+// CONFIGURACIÓN DE UMAP - ENLACE CORTO
 // =========================================================================
 define('UMAP_MAP_ID', 1447967);
-define('UMAP_LANG', 'es');
 define('UMAP_TIMEOUT', 120);
 
-// URL CORRECTA con el nombre del mapa
-$UMAP_URL = 'https://umap.openstreetmap.fr/es/map/rutaslapaz_1447967/?format=geojson';
+// ⭐ USANDO EL ENLACE CORTO DE UMAP (más confiable)
+$UMAP_URL = 'http://u.osmfr.org/m/1447967/?format=geojson';
 
 // =========================================================================
 // ESTADÍSTICAS
@@ -253,9 +253,6 @@ function upsert_ruta(PDO $pdo, array $datos, array &$stats): int {
     return (int)$pdo->lastInsertId();
 }
 
-// =========================================================================
-// FUNCIÓN upsert_parada CORREGIDA (parámetros en orden correcto)
-// =========================================================================
 function upsert_parada(PDO $pdo, float $lat, float $lng, ?string $nombre, ?string $id_umap, array &$stats): int {
     if ($id_umap) {
         $sel = $pdo->prepare("SELECT id_parada FROM parada WHERE id_umap = ? LIMIT 1");
@@ -349,7 +346,7 @@ function distancia_metros(float $lat1, float $lng1, float $lat2, float $lng2): f
 // =========================================================================
 
 try {
-    // Descargar GeoJSON con URL CORRECTA
+    // Descargar GeoJSON con enlace corto
     $jsonRaw = descargar_url($UMAP_URL);
 
     $geo = json_decode($jsonRaw, true);
