@@ -17,7 +17,7 @@ permissions:
 env:
   # ⚠️ ID CORRECTO del mapa uMap LA-PAZ TURISTICO (no 1447967 - ese era otro mapa).
   # Extraído de la URL: https://umap.openstreetmap.fr/en/map/la-paz-turistico_873950
-  UMAP_MAP_ID: 873950
+  UMAP_MAP_ID: 1447967
   CAPAS_IDS: |
     8bfdeb7b-421c-4ff6-9643-53c75c3a88bc
     1131cb1a-631f-4d7b-8f33-f46a469366f9
