@@ -100,7 +100,11 @@ try {
 
     // Collación UTF-8 y modo de grupo estricto
     $pdo->exec("SET NAMES 'utf8mb4' COLLATE 'utf8mb4_spanish_ci'");
-    $pdo->exec("SET SESSION sql_mode = 'STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_AUTO_CREATE_USER,NO_ENGINE_SUBSTITUTION'");
+    
+    // ✅ FIX: Eliminar NO_AUTO_CREATE_USER (obsoleto en MySQL 8+)
+    // Solo mantener modos SQL que existen en MySQL 8+
+    $pdo->exec("SET SESSION sql_mode = 'STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'");
+    
     $pdo->exec("SET SESSION time_zone = '-04:00'"); // Bolivia (America/La_Paz)
 
     // Solo si el archivo fue accedido DIRECTAMENTE (HTTP) → mostramos JSON OK
