@@ -76,20 +76,24 @@ function buildProxyHeaders(request, targetHost) {
                      'es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7,fr;q=0.6,de;q=0.5,pt;q=0.4';
 
   const baseHeaders = {
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/geo+json,application/json',
+    // 🔝 Prioridad máxima: GEOSJON/JSON (solicitamos datos de capa, no HTML)
+    'Accept': 'application/geo+json, application/json, text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
     'Accept-Language': acceptLang,
     'Cache-Control': 'max-age=0',
     'Pragma': 'no-cache',
     'Sec-Ch-Ua': `"Not)A;Brand";v="99", "Google Chrome";v="128", "Chromium";v="128"`,
     'Sec-Ch-Ua-Mobile': '?0',
     'Sec-Ch-Ua-Platform': `"Windows"`,
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'none',
-    'Sec-Fetch-User': '?1',
+    // Para la API /api/0.1/ preferimos cors + same-origin (no navigate)
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'same-origin',
     'Upgrade-Insecure-Requests': '1',
     'DNT': '1',
     'Priority': 'u=0, i',
+    // Referer correcto de un mapa público uMap
+    'Referer': 'https://umap.openstreetmap.fr/en/map/la-paz-turistico_873950',
+    'Origin':  'https://umap.openstreetmap.fr',
   };
 
   const finalHeaders = new Headers();

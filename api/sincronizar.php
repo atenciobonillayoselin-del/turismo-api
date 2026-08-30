@@ -71,7 +71,9 @@ $DB_NAME = getenv('PDO_DATABASE') ?: 'defaultdb';
 $DB_USER = getenv('PDO_USERNAME') ?: 'avnadmin';
 $DB_PASS = getenv('PDO_PASSWORD') ?: '';
 
-define('UMAP_MAP_ID', 1447967);
+// ⚠️ ID CORRECTO del mapa uMap LA-PAZ TURISTICO (no 1447967 - ese era otro mapa).
+// Extraído de la URL: https://umap.openstreetmap.fr/en/map/la-paz-turistico_873950
+define('UMAP_MAP_ID', 873950);
 define('UMAP_TIMEOUT', 40);
 define('CACHE_DIR', dirname(__DIR__) . '/data/umap_cache');
 define('CACHE_MAX_AGE_SECONDS', 60 * 60); // 1 hora → después trigger GHA
@@ -247,11 +249,18 @@ migrarEsquema($pdo, $stats);
 
 function buildUrlVariants(string $capaId): array {
     $mid = UMAP_MAP_ID;
+    // 🚨 URLs en ORDEN de preferencia:
+    // 1) NUEVA API v0.1 (OFICIAL uMap 2024+) - ENDPOINT PRINCIPAL
+    // 2) Variantes antiguas de compatibilidad (datalayer)
+    // 3) Otras instancias mirror (u.osmfr.org, umap.openstreetmap.de)
     return [
+        "https://umap.openstreetmap.fr/api/0.1/map/$mid/layer/$capaId/data/",
+        "https://umap.openstreetmap.fr/api/0.1/map/$mid/layer/$capaId/data?format=geojson",
+        "https://umap.openstreetmap.fr/es/map/_/$mid?data=$capaId&format=geojson",
+        "https://umap.openstreetmap.fr/en/map/_/$mid?data=$capaId&format=geojson",
         "https://umap.openstreetmap.fr/es/datalayer/$mid/$capaId/?format=geojson",
         "https://umap.openstreetmap.fr/en/datalayer/$mid/$capaId/?format=geojson",
-        "https://umap.openstreetmap.fr/es/datalayer/$mid/$capaId/",
-        "https://u.osmfr.org/m/$mid/datalayer/$capaId/",
+        "https://u.osmfr.org/m/$mid/datalayer/$capaId/?format=geojson",
         "https://umap.openstreetmap.de/de/datalayer/$mid/$capaId/?format=geojson",
     ];
 }

@@ -15,7 +15,9 @@ permissions:
   contents: write
 
 env:
-  UMAP_MAP_ID: 1447967
+  # ⚠️ ID CORRECTO del mapa uMap LA-PAZ TURISTICO (no 1447967 - ese era otro mapa).
+  # Extraído de la URL: https://umap.openstreetmap.fr/en/map/la-paz-turistico_873950
+  UMAP_MAP_ID: 873950
   CAPAS_IDS: |
     8bfdeb7b-421c-4ff6-9643-53c75c3a88bc
     1131cb1a-631f-4d7b-8f33-f46a469366f9
@@ -65,10 +67,17 @@ jobs:
 
           build_url_variants() {
             local CID="$1"
+            # 🚨 URLs en ORDEN de preferencia:
+            # 1) NUEVA API v0.1 (OFICIAL uMap 2024+) - ENDPOINT PRINCIPAL
+            # 2) Variantes antiguas de compatibilidad (datalayer)
+            # 3) Otras instancias mirror (u.osmfr.org, umap.openstreetmap.de)
+            echo "https://umap.openstreetmap.fr/api/0.1/map/${MID}/layer/${CID}/data/"
+            echo "https://umap.openstreetmap.fr/api/0.1/map/${MID}/layer/${CID}/data?format=geojson"
+            echo "https://umap.openstreetmap.fr/es/map/_/${MID}?data=${CID}&format=geojson"
+            echo "https://umap.openstreetmap.fr/en/map/_/${MID}?data=${CID}&format=geojson"
             echo "https://umap.openstreetmap.fr/es/datalayer/${MID}/${CID}/?format=geojson"
             echo "https://umap.openstreetmap.fr/en/datalayer/${MID}/${CID}/?format=geojson"
-            echo "https://umap.openstreetmap.fr/es/datalayer/${MID}/${CID}/"
-            echo "https://u.osmfr.org/m/${MID}/datalayer/${CID}/"
+            echo "https://u.osmfr.org/m/${MID}/datalayer/${CID}/?format=geojson"
             echo "https://umap.openstreetmap.de/de/datalayer/${MID}/${CID}/?format=geojson"
           }
 
