@@ -1,0 +1,96 @@
+# ============================================================
+# .dockerignore - Archivos a EXCLUIR del build de Docker
+# Optimiza tamaño de la imagen y velocidad de build
+# ============================================================
+
+# --- Sistema / IDEs ---
+.git
+.gitignore
+.github
+.gitattributes
+.trae/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+.editorconfig
+README*.md
+CHANGELOG.md
+
+# --- PHP Composer (se instala dentro del container con --no-dev) ---
+vendor/
+!vendor/.htaccess
+composer.phar
+
+# --- Node.js / Frontend (si hubiera) ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+.bowerrc
+.bower/
+
+# --- Python / otros lenguajes ---
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.env
+venv.bak/
+
+# --- Logs & Cache local ---
+*.log
+logs/
+tmp/
+temp/
+cache/
+
+# --- NO ignorar data/umap_cache porque contiene el GeoJSON para GitHub Action ---
+# PERO sí ignorar archivos temporales dentro:
+data/tmp/
+data/*.tmp
+
+# --- Archivos sensibles (NUNCA subir a Docker image) ---
+.env.local
+.env.*.local
+*.pem
+*.key
+*.crt
+!config/ca.pem
+
+# --- Testing / QA (no se necesitan en producción) ---
+tests/
+test/
+phpunit.xml
+behat.yml
+.phpspec/
+.psysh*
+.phpunit.*
+
+# --- Documentación / Ejemplos ---
+docs/
+doc/
+examples/
+samples/
+
+# --- Archivos de deploy locales ---
+docker-compose*.yml
+docker-compose*.yaml
+*.Dockerfile
+!Dockerfile
+scripts/dev/
+Makefile
+Vagrantfile
+
+# --- Outputs / builds locales ---
+*.tar.gz
+*.zip
+dist/
+build/
+coverage/

@@ -1,45 +1,81 @@
 # ============================================================
-# Render.com - Blueprint de despliegue
+# Render.com - Blueprint de despliegue (v3.0 - DOCKER NATIVO)
 # Archivo: render.yaml
 # ============================================================
-# USO:
-#   1. Haz commit y push de ESTE archivo a tu repositorio GitHub
-#   2. En Render.com → "Blueprints" → "New Blueprint Instance"
-#   3. Conecta tu repositorio → Render detecta este render.yaml
-#   4. Completa los Environment Variables marcados como "sync: false"
-#      (los secretos NUNCA van en texto plano aquí)
+# ⚠️ IMPORTANTE:
+#   Render YA NO tiene runtime PHP nativo. DESDE 2025 usamos DOCKER.
+#   Dockerfile incluido en la raíz: ./Dockerfile (PHP 8.3 + Apache)
 #
-# CRON AUTOMÁTICO:
-#   Render NO tiene cron gratuito. Para auto-sincronizar cada 15 min:
-#   → Usa el GitHub Action incluido (.github/workflows/sincronizar-umap.yml)
-#   → Ya viene configurado con cron: '*/15 * * * *'
-#   → Si hay cambios en caché, llama a RENDER_SYNC_URL para actualizar BD
+# PASO 1 (ANTES DE DESPLEGAR):
+#   Haz commit & push al repo de:
+#     ✅ Dockerfile             (raíz del proyecto)
+#     ✅ .dockerignore          (raíz del proyecto)
+#     ✅ render.yaml            (raíz del proyecto - ESTE archivo)
+#     ✅ api/                   (sincronizar.php, test_connection.php, etc.)
+#     ✅ config/                (cloudflare-worker-umap-proxy.js, database.php, ca.pem)
+#     ✅ data/umap_cache/       (README.md + .json generados por GitHub Action)
 #
-# MANUAL: Visita → https://TU-SERVICIO.onrender.com/api/sincronizar.php?refresh=1
+# PASO 2 (Render.com):
+#   OPCIÓN A (Blueprints - RECOMENDADO):
+#     1. Ve a https://dashboard.render.com → Blueprints → "New Blueprint Instance"
+#     2. Selecciona tu repo → connect → deja el nombre por defecto
+#     3. Render detecta AUTOMÁTICAMENTE este render.yaml
+#     4. Ve al servicio creado → Environment → completa las variables "sync: false"
+#        (PDO_PASSWORD, UMAP_PROXY_URL, etc.)
+#     5. Save Changes → deploy automático
+#
+#   OPCIÓN B (Manual si Blueprint no funciona):
+#     1. Dashboard → New → Web Service
+#     2. Elige tu repo GitHub
+#     3. Runtime = "Docker" (¡IMPORTANTE! No elijas PHP, no existe ya)
+#     4. Root Directory = ./  (raíz, donde está el Dockerfile)
+#     5. Region = Oregon / EU Frankfurt (cerca de La Paz, Bolivia)
+#     6. Plan = Free (o Starter si quieres más recursos)
+#     7. Environment → agrega las variables de la sección de abajo
+#     8. "Create Web Service" → esperar build ~3-5 min
+#
+# PASO 3 (DESPUÉS de desplegar):
+#   Abre → https://TU-SERVICIO.onrender.com/api/test_connection.php
+#   Debe decir: "✅ Conexión exitosa"
+#
+# PASO 4 (SYNC AUTOMÁTICA cada 15 min):
+#   Ya tienes GitHub Action en: .github/workflows/sincronizar-umap.yml
+#   - Va al repo → Settings → Secrets → agrega UMAP_PROXY_URL y RENDER_SYNC_URL
+#   - Tabs → Actions → habilita workflows → "Run workflow" (primera vez)
 # ============================================================
 
 services:
   - type: web
     name: turismo-api
-    runtime: php
+    # ============================================================
+    # ✅ RUNTIME = DOCKER (Render requiere Docker para PHP 2025+)
+    # ============================================================
+    runtime: docker
+    # Dockerfile está en la raíz del proyecto
+    dockerfilePath: ./Dockerfile
+    dockerContext: ./
     plan: free
+    region: oregon
 
-    buildCommand: |
-      echo "=== Build Turismo La Paz API ==="
-      composer install --no-dev 2>/dev/null || true
-      ls -la
-      echo "=== Build OK ==="
+    # Configs de autodeploy
+    autoDeploy: true
+    branch: main
+    pullPreviews: false
 
-    startCommand: |
-      echo "🚀 Starting PHP server on port $PORT..."
-      php -S 0.0.0.0:$PORT -t .
+    # Puerto Render → mapeado dinámicamente por el entrypoint del Dockerfile
+    # (el Dockerfile reemplaza el Listen 80 de Apache al $PORT de Render)
+
+    # Health check (Render usa esto para saber si el contenedor arrancó bien)
+    healthCheckPath: /api/test_connection.php
+    healthCheckInitialWaitSeconds: 20
+    healthCheckIntervalSeconds: 60
+    healthCheckTimeoutSeconds: 5
 
     # ============================================================
     # ENVIRONMENT VARIABLES
     # ============================================================
-    # Cada variable:
-    #   sync: false → NO sincronizar con otros servicios (es SECRETA)
-    #   sync: true  → ya viene con valor por defecto
+    # sync: false → requieren que TÚ pongas el valor en Dashboard → Environment
+    # sync: true  → valor por defecto ya configurado
     # ============================================================
     envVars:
 
@@ -64,97 +100,101 @@ services:
 
       - key: PDO_PASSWORD
         sync: false
-        description: "🔑 CONTRASEÑA MySQL Aiven (REQUIRED - no dejar vacío)"
+        description: "🔑 CONTRASEÑA MySQL Aiven (OBLIGATORIA - no dejar vacía)"
 
       - key: PDO_SSL_CA
         value: config/ca.pem
-        description: "Ruta al certificado SSL CA de Aiven → config/ca.pem"
+        description: "Ruta al certificado SSL CA de Aiven → config/ca.pem (debe existir en el repo)"
 
       # ============================================================
-      # 🟧 RECOMENDADAS - ANTI-BLOQUEO 403 (EL ORDEN IMPORTA)
+      # 🟧 RECOMENDADAS - ANTI-BLOQUEO 403
       # ============================================================
       - key: UMAP_PROXY_URL
         sync: false
         description: |
-          🔝 [ANTI-403 NIVEL 2 y 3 - RECOMENDADO PRIMERO]
-          Cloudflare Worker Proxy URL GRATIS.
-          DEPLOY: Copia el código de config/cloudflare-worker-umap-proxy.js
-                  a dash.cloudflare.com → Workers → Create Worker
-          VALOR ejemplo: https://umap-proxy-turismo.TU_CUENTA.workers.dev/?url=
-          (importante: termina con ?url=  sino no funciona)
+          🔝 [NIVEL 2 y 3 - MÁS IMPORTANTE]
+          URL de tu Cloudflare Worker, TERMINA CON "?url="
+          Como obtenerla:
+            1. Ve a dash.cloudflare.com → Workers & Pages → Create Worker
+            2. Borra el código por defecto, pega TODO el contenido de config/cloudflare-worker-umap-proxy.js
+            3. Save and deploy → copia URL
+            4. Agrégale al final: ?url=
+          EJEMPLO CORRECTO:   https://umap-proxy-turismo.yocuenta.workers.dev/?url=
+          EJEMPLO INCORRECTO: https://umap-proxy-turismo.yocuenta.workers.dev  (falta ?url=)
 
       - key: GITHUB_RAW_BASE
         sync: false
         description: |
-          🔝 [ANTI-403 NIVEL 4 y 5 - SEGUNDA OPCIÓN]
-          Caché remota GitHub Raw (si tu proxy Cloudflare no funciona).
-          VALOR ejemplo: https://raw.githubusercontent.com/TU_USUARIO/turismo_api/main
-          NOTA: El GitHub Action sube archivos a data/umap_cache/*.json cada 15 min.
+          🔝 [NIVEL 4 y 5 - FALLBACK SI PROXY FALLA]
+          URL raw de tu repo GitHub (sin slash final).
+          Formato: https://raw.githubusercontent.com/TU_USUARIO/TU_REPO/main
+          EJEMPLO:  https://raw.githubusercontent.com/atenciobonillayoselin-del/turismo-api/main
 
       - key: UMAP_TOKEN
         sync: false
         description: |
-          (OPCIONAL pero MUY RECOMENDADO si tu mapa es privado o 403 persiste)
-          Cookie COMPLETA de sesión de uMap.openstreetmap.fr cuando inicias sesión en Chrome/Firefox.
-          COMO OBTENERLA:
-            1. Abre umap.openstreetmap.fr en navegador → INICIA SESIÓN con tu cuenta OSM
-            2. F12 → Network → Recarga → click en CUALQUIER request a umap.openstreetmap.fr
-            3. En "Request Headers", busca la línea que empieza con "Cookie: "
-            4. COPIA TODO el valor DESPUÉS de "Cookie: "
-            5. Pégalo aquí (será MUY LARGO: ~500-2000 chars, es normal)
-          Formato ejemplo: sessionid=abc123; csrftoken=xyz789; _ga=GA1...; _gid=GA1...; etc...
+          (OPCIONAL pero recomendado si el mapa es privado)
+          Cookie COMPLETA de sesión de umap.openstreetmap.fr cuando inicias sesión.
+          Cómo obtenerla:
+            1. Abre umap.openstreetmap.fr en Chrome/Firefox, INICIA SESIÓN
+            2. F12 → Network → Recarga → click cualquier request a umap.openstreetmap.fr
+            3. Request Headers → línea "Cookie: sessionid=...; csrftoken=...; _ga=...; ..."
+            4. COPIA TODO el valor DESPUÉS de "Cookie: " y pégalo aquí
+          Nota: caduca cada 15-30 días, tendrás que actualizarla periódicamente.
 
       # ============================================================
-      # 🟨 OPCIONALES - NIVEL 6 (último recurso, solo si NIVEL 1-5 fallan)
+      # 🟨 OPCIONALES - NIVEL 6 (último recurso)
       # ============================================================
       - key: GITHUB_REPO
         sync: false
         description: |
-          (OPCIONAL - NIVEL 6) Tu repo GitHub para trigger el workflow via API.
-          Formato: TU_USUARIO/turismo-api   (sin .git)
-          Ejemplo: Atencio/turismo-api
+          (OPCIONAL) Tu repo para trigger GitHub Actions via API (NIVEL 6).
+          Formato: TU_USUARIO/tu-repo
+          Ejemplo: atenciobonillayoselin-del/turismo-api
 
       - key: GITHUB_TOKEN
         sync: false
         description: |
-          (OPCIONAL - NIVEL 6) GitHub Personal Access Token (classic).
-          CREARLO EN: github.com → Settings → Developer settings → Personal access tokens → Tokens (classic)
-          PERMISOS MÍNIMOS:
-            ✅ repo → repo:status   (para trigger workflow)
+          (OPCIONAL) GitHub Personal Access Token (Classic).
+          Crear en: github.com → Settings → Developer → Personal access tokens → Tokens (classic)
+          Permisos mínimos:
+            ✅ repo → repo:status
             ✅ repo → repo_deployment
-            ✅ (si el repo es privado) repo → repo (full control)
-          EXPIRACIÓN: 90 días recomendado
+          Expiración recomendada: 90 días
 
       - key: GITHUB_WAIT_SECONDS
         value: "120"
-        description: |
-          (OPCIONAL) Segundos máximos de espera al GitHub Workflow en NIVEL 6.
-          Default 90s, puede subirse a 120-180 si tienes conexión lenta.
+        description: "Segundos máximos de espera al workflow de GitHub en el NIVEL 6 (default 90-120)"
 
       # ============================================================
-      # 🟩 OPCIONAL - NOTIFICACIÓN DESDE GITHUB ACTIONS
+      # 🟩 OPCIONAL - NOTIFICACIÓN TRAS GITHUB ACTION
       # ============================================================
       - key: RENDER_SYNC_URL
         sync: false
         description: |
-          (OPCIONAL) URL completa de sincronizar.php en ESTE servicio.
-          El GitHub Action llama a esta URL cuando sube caché NUEVA al repo.
-          VALOR ejemplo: https://turismo-api-abc123.onrender.com/api/sincronizar.php
-          (Busca tu URL real en el Dashboard de Render)
-
-    autoDeploy: true
-    pullPreviews: false
+          (OPCIONAL) URL completa a sincronizar.php en ESTE servicio.
+          El GitHub Action llama a esta URL CUANDO detecta datos NUEVOS para actualizar la BD.
+          EJEMPLO: https://turismo-api-abc123xyz.onrender.com/api/sincronizar.php
+          (Mira tu URL REAL en el dashboard de Render, la creará automáticamente)
 
 # ============================================================
-# 🔑 VERIFICACIÓN RÁPIDA (después de deployar):
+# ✅ POST-DEPLOY CHECKLIST (después de que termine el build):
 # ============================================================
-# 1. Abre → https://TU-SERVICIO.onrender.com/api/test_connection.php
-#    Debería decir: "✅ Conexión exitosa"
+# 1) Abre /api/test_connection.php
+#      Esperado: JSON {"success":true,"mensaje":"✅ Conexión exitosa..."}
 #
-# 2. Abre → https://TU-SERVICIO.onrender.com/api/sincronizar.php
-#    (primera vez tardará 30-90s porque prueba TODOS los niveles)
-#    Resultado esperado: "success": true, "metodo_descarga_principal": "L2-proxy" o "L5-github_raw"
+# 2) Abre /api/sincronizar.php  (TARDA 30-90s la primera vez)
+#      Esperado: "success": true
+#      Mira método usado: método_descarga_principal = L2-proxy o L5-github_raw
 #
-# 3. Abre → https://TU-SERVICIO.onrender.com/api/lugares.php
-#    Debería devolver JSON con tus 20+ lugares turísticos
+# 3) Abre /api/lugares.php
+#      Esperado: Array JSON con 20+ lugares turísticos
+#
+# 4) Abre /api/rutas.php
+#      Esperado: Array JSON con 7 rutas (Minibus 254 IDA/VUELTA, 204 IDA, 889 IDA/VUELTA, 364 IDA/VUELTA)
+#
+# 5) (Solo si algo falla) → Logs del servicio en Render.com
+#      Busca líneas como:
+#        "🐳 Configurando Apache para puerto=10000"
+#        "🚀 PHP 8.3.x + Apache inicializado"
 # ============================================================
