@@ -1,6 +1,7 @@
 <?php
 /**
- * sincronizar.php - VERSIÓN CON DEBUG Y INSERCIÓN FORZADA
+ * sincronizar.php - VERSIÓN CON ESTRATEGIA DE DESCARGA ALTERNATIVA
+ * Usa múltiples métodos para descargar las capas
  */
 
 error_reporting(E_ALL);
@@ -49,61 +50,105 @@ try {
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT => false,
     ]);
+    $stats['debug'][] = "✅ Conexión a BD exitosa";
 } catch (PDOException $e) {
     echo json_encode(['success' => false, 'error' => 'BD: ' . $e->getMessage()]);
     exit;
 }
 
 // =========================================================================
-// FUNCIONES
+// FUNCIÓN DE DESCARGA CON MÚLTIPLES ESTRATEGIAS
 // =========================================================================
 
-function descargar_url(string $url): string {
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_TIMEOUT        => UMAP_TIMEOUT,
-        CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_USERAGENT      => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        CURLOPT_HTTPHEADER     => [
-            'Accept: application/geo+json, application/json',
-            'Accept-Language: es-ES,es;q=0.9',
-            'Referer: https://umap.openstreetmap.fr/',
-            'Origin: https://umap.openstreetmap.fr',
-        ],
-        CURLOPT_ENCODING => '',
-    ]);
-    $resp = curl_exec($ch);
-    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $err  = curl_error($ch);
-    curl_close($ch);
-    if ($resp === false || $code < 200 || $code >= 400) {
-        throw new Exception("Fallo al descargar {$url} (HTTP {$code}). {$err}");
-    }
-    return $resp;
-}
-
-function obtener_geojson_capa(int $mapId, string $datalayerId): ?array {
-    $url = "https://umap.openstreetmap.fr/es/datalayer/{$mapId}/{$datalayerId}/?format=geojson";
-    try {
-        $data = descargar_url($url);
-        $geo = json_decode($data, true);
-        if (!empty($geo['features'])) {
-            return $geo;
-        }
-    } catch (Exception $e) {
-        // Intentar sin formato
+function descargar_con_estrategias(string $url): ?string {
+    $strategies = [
+        // Estrategia 1: Con User-Agent de navegador y headers completos
+        function($url) {
+            $ch = curl_init($url);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_TIMEOUT => 30,
+                CURLOPT_SSL_VERIFYPEER => false,
+                CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                CURLOPT_HTTPHEADER => [
+                    'Accept: application/geo+json, application/json',
+                    'Accept-Language: es-ES,es;q=0.9',
+                    'Referer: https://umap.openstreetmap.fr/',
+                    'Origin: https://umap.openstreetmap.fr',
+                ],
+                CURLOPT_ENCODING => '',
+            ]);
+            $resp = curl_exec($ch);
+            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            return ($code === 200) ? $resp : null;
+        },
+        // Estrategia 2: Con proxy
+        function($url) {
+            $proxyUrl = 'https://cors-anywhere.herokuapp.com/' . $url;
+            $ch = curl_init($proxyUrl);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_TIMEOUT => 30,
+                CURLOPT_SSL_VERIFYPEER => false,
+                CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            ]);
+            $resp = curl_exec($ch);
+            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            return ($code === 200) ? $resp : null;
+        },
+        // Estrategia 3: Con enlace corto
+        function($url) {
+            // Reemplazar URL con enlace corto
+            $shortUrl = str_replace(
+                'https://umap.openstreetmap.fr/es/datalayer/',
+                'http://u.osmfr.org/m/1447967/datalayer/',
+                $url
+            );
+            $ch = curl_init($shortUrl);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_TIMEOUT => 30,
+                CURLOPT_SSL_VERIFYPEER => false,
+                CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            ]);
+            $resp = curl_exec($ch);
+            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            curl_close($ch);
+            return ($code === 200) ? $resp : null;
+        },
+    ];
+    
+    foreach ($strategies as $index => $strategy) {
         try {
-            $url2 = "https://umap.openstreetmap.fr/es/datalayer/{$mapId}/{$datalayerId}/";
-            $data2 = descargar_url($url2);
-            $geo2 = json_decode($data2, true);
-            if (!empty($geo2['features'])) {
-                return $geo2;
+            $result = $strategy($url);
+            if ($result !== null) {
+                return $result;
             }
-        } catch (Exception $e2) {}
+        } catch (Exception $e) {
+            // Continuar con la siguiente estrategia
+        }
     }
     return null;
+}
+
+// =========================================================================
+// LISTA DE CAPAS
+// =========================================================================
+function obtener_capas(): array {
+    return [
+        ['id' => '8bfdeb7b-421c-4ff6-9643-53c75c3a88bc', 'nombre' => 'Minibus 254 - IDA (Mirador Montículo)', 'grupo' => 'Mirador Montículo', 'tiene_punto' => true],
+        ['id' => '1131cb1a-631f-4d7b-8f33-f46a469366f9', 'nombre' => 'Minibus 254 - VUELTA (Mirador Montículo)', 'grupo' => 'Mirador Montículo', 'tiene_punto' => false],
+        ['id' => '34f4c3be-3ec9-400b-9b82-c3be983df2dd', 'nombre' => 'Minibus 204 - IDA (MIRADOR KILLI KILLI)', 'grupo' => 'Mirador Killi Killi', 'tiene_punto' => true],
+        ['id' => 'ce66785e-ee35-4de4-b5d8-3ab0d57e1e47', 'nombre' => 'Minibus 889 - IDA (PLAZA VILLAROEL)', 'grupo' => 'Plaza Villarroel', 'tiene_punto' => false],
+        ['id' => 'fa904f68-9ee2-4e12-b3a4-8406f357def5', 'nombre' => 'Minibus 889 - VUELTA (PLAZA VILLAROEL)', 'grupo' => 'Plaza Villarroel', 'tiene_punto' => false],
+        ['id' => '0a5a5bfc-8c95-4fea-8400-3a8438a2b533', 'nombre' => 'Minibus 364 - IDA (PARQUE LAICACOTA)', 'grupo' => 'Parque Laikakota', 'tiene_punto' => false],
+        ['id' => '291c212e-44db-4460-b84e-773bcfede107', 'nombre' => 'Minibus 364 - VUELTA (PARQUE LAICACOTA)', 'grupo' => 'Parque Laikakota', 'tiene_punto' => false],
+    ];
 }
 
 function detectar_sentido(string $nombre): string {
@@ -119,108 +164,42 @@ function extraer_grupo_parentesis(string $nombre): array {
 }
 
 // =========================================================================
-// FUNCIONES DE INSERCIÓN CON DEBUG
-// =========================================================================
-
-function insertar_lugar(PDO $pdo, array $datos, array &$stats): int {
-    $stats['debug'][] = "Insertando lugar: " . $datos['nombre'] . " en grupo: " . $datos['grupo_umap'];
-    
-    $sql = "INSERT INTO lugar_turistico 
-            (nombre, grupo_umap, latitud, longitud, id_umap, activo) 
-            VALUES (?, ?, ?, ?, ?, 1)";
-    
-    try {
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute([
-            $datos['nombre'],
-            $datos['grupo_umap'],
-            $datos['latitud'],
-            $datos['longitud'],
-            $datos['id_umap']
-        ]);
-        $id = (int)$pdo->lastInsertId();
-        $stats['lugares_insert']++;
-        $stats['debug'][] = "✅ Lugar insertado ID: $id";
-        return $id;
-    } catch (PDOException $e) {
-        $stats['debug'][] = "❌ Error insertando lugar: " . $e->getMessage();
-        return 0;
-    }
-}
-
-function insertar_ruta(PDO $pdo, array $datos, array &$stats): int {
-    $stats['debug'][] = "Insertando ruta: " . $datos['nombre'];
-    
-    $sql = "INSERT INTO ruta 
-            (nombre, sentido, color_hex, id_umap, id_grupo_umap, activo) 
-            VALUES (?, ?, ?, ?, ?, 1)";
-    
-    try {
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute([
-            $datos['nombre'],
-            $datos['sentido'],
-            $datos['color_hex'],
-            $datos['id_umap'],
-            $datos['id_grupo_umap']
-        ]);
-        $id = (int)$pdo->lastInsertId();
-        $stats['rutas_insert']++;
-        $stats['debug'][] = "✅ Ruta insertada ID: $id";
-        return $id;
-    } catch (PDOException $e) {
-        $stats['debug'][] = "❌ Error insertando ruta: " . $e->getMessage();
-        return 0;
-    }
-}
-
-function asociar_ruta_lugar(PDO $pdo, int $idRuta, int $idLugar, array &$stats): void {
-    $sql = "INSERT IGNORE INTO ruta_lugar (id_ruta, id_lugar) VALUES (?, ?)";
-    try {
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute([$idRuta, $idLugar]);
-        if ($stmt->rowCount() > 0) {
-            $stats['ruta_lugar_ok']++;
-            $stats['debug'][] = "✅ Asociación ruta-lugar creada";
-        }
-    } catch (PDOException $e) {
-        $stats['debug'][] = "❌ Error asociando: " . $e->getMessage();
-    }
-}
-
-// =========================================================================
-// LISTA DE CAPAS (FALLBACK)
-// =========================================================================
-function obtener_capas_fallback(): array {
-    return [
-        ['id' => '8bfdeb7b-421c-4ff6-9643-53c75c3a88bc', 'nombre' => 'Minibus 254 - IDA (Mirador Montículo)', 'grupo' => 'Mirador Montículo'],
-        ['id' => '1131cb1a-631f-4d7b-8f33-f46a469366f9', 'nombre' => 'Minibus 254 - VUELTA (Mirador Montículo)', 'grupo' => 'Mirador Montículo'],
-        ['id' => '34f4c3be-3ec9-400b-9b82-c3be983df2dd', 'nombre' => 'Minibus 204 - IDA (MIRADOR KILLI KILLI)', 'grupo' => 'Mirador Killi Killi'],
-        ['id' => 'ce66785e-ee35-4de4-b5d8-3ab0d57e1e47', 'nombre' => 'Minibus 889 - IDA (PLAZA VILLAROEL)', 'grupo' => 'Plaza Villarroel'],
-        ['id' => 'fa904f68-9ee2-4e12-b3a4-8406f357def5', 'nombre' => 'Minibus 889 - VUELTA (PLAZA VILLAROEL)', 'grupo' => 'Plaza Villarroel'],
-        ['id' => '0a5a5bfc-8c95-4fea-8400-3a8438a2b533', 'nombre' => 'Minibus 364 - IDA (PARQUE LAICACOTA)', 'grupo' => 'Parque Laikakota'],
-        ['id' => '291c212e-44db-4460-b84e-773bcfede107', 'nombre' => 'Minibus 364 - VUELTA (PARQUE LAICACOTA)', 'grupo' => 'Parque Laikakota'],
-    ];
-}
-
-// =========================================================================
-// EJECUCIÓN PRINCIPAL
+// EJECUCIÓN
 // =========================================================================
 
 try {
-    $capas = obtener_capas_fallback();
+    $capas = obtener_capas();
     $stats['total_capas'] = count($capas);
+    $stats['debug'][] = "📋 Total capas: " . count($capas);
     
-    // PROCESAR CADA CAPA
+    // LIMPIAR TABLAS ANTES DE INSERTAR
+    $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
+    $pdo->exec("TRUNCATE TABLE ruta_lugar");
+    $pdo->exec("TRUNCATE TABLE ruta");
+    $pdo->exec("TRUNCATE TABLE lugar_turistico");
+    $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
+    $stats['debug'][] = "🧹 Tablas limpiadas";
+    
     foreach ($capas as $capa) {
-        $geojson = obtener_geojson_capa(UMAP_MAP_ID, $capa['id']);
+        $url = "https://umap.openstreetmap.fr/es/datalayer/{$capa['id']}/?format=geojson";
+        $stats['debug'][] = "📥 Descargando: " . $capa['nombre'];
         
-        if (!$geojson || empty($geojson['features'])) {
-            $stats['warnings'][] = "No se pudo obtener: {$capa['nombre']} ({$capa['id']})";
+        $data = descargar_con_estrategias($url);
+        
+        if (!$data) {
+            $stats['warnings'][] = "No se pudo descargar: {$capa['nombre']}";
+            $stats['debug'][] = "❌ Falló descarga: " . $capa['nombre'];
             continue;
         }
         
-        $stats['debug'][] = "📦 Procesando capa: " . $capa['nombre'];
+        $geojson = json_decode($data, true);
+        if (empty($geojson['features'])) {
+            $stats['warnings'][] = "Sin features: {$capa['nombre']}";
+            $stats['debug'][] = "⚠️ Sin features para: " . $capa['nombre'];
+            continue;
+        }
+        
+        $stats['debug'][] = "✅ Descargado: " . $capa['nombre'] . " (" . count($geojson['features']) . " features)";
         
         foreach ($geojson['features'] as $feature) {
             $gtype = $feature['geometry']['type'] ?? '';
@@ -232,46 +211,71 @@ try {
                 $lng = $coords[0] ?? 0;
                 
                 if ($lat != 0 && $lng != 0) {
-                    $stats['debug'][] = "📍 Punto encontrado: lat=$lat, lng=$lng";
-                    insertar_lugar($pdo, [
-                        'id_umap' => $capa['id'],
-                        'nombre' => $capa['nombre'],
-                        'grupo_umap' => $capa['grupo'],
-                        'latitud' => $lat,
-                        'longitud' => $lng,
-                    ], $stats);
+                    $nombreLugar = $capa['nombre'];
+                    // Si el nombre tiene paréntesis, extraer solo el nombre del lugar
+                    $parentesis = extraer_grupo_parentesis($nombreLugar);
+                    if (!empty($parentesis)) {
+                        $nombreLugar = $parentesis[0];
+                    }
+                    
+                    $sql = "INSERT INTO lugar_turistico 
+                            (nombre, grupo_umap, latitud, longitud, id_umap, activo) 
+                            VALUES (?, ?, ?, ?, ?, 1)";
+                    $stmt = $pdo->prepare($sql);
+                    $stmt->execute([
+                        $nombreLugar,
+                        $capa['grupo'],
+                        $lat,
+                        $lng,
+                        $capa['id']
+                    ]);
+                    $stats['lugares_insert']++;
+                    $stats['debug'][] = "📍 Lugar insertado: " . $nombreLugar;
                 }
-            } elseif ($gtype === 'LineString' && count($coords) >= 2) {
+            }
+            
+            if ($gtype === 'LineString' && count($coords) >= 2) {
                 $stats['total_lineas']++;
                 $sentido = detectar_sentido($capa['nombre']);
                 $color = ($sentido === 'VUELTA') ? '#2980B9' : '#E74C3C';
                 
-                $stats['debug'][] = "🛤️ Línea encontrada: " . $capa['nombre'];
+                $sql = "INSERT INTO ruta 
+                        (nombre, sentido, color_hex, id_umap, id_grupo_umap, activo) 
+                        VALUES (?, ?, ?, ?, ?, 1)";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([
+                    $capa['nombre'],
+                    $sentido,
+                    $color,
+                    $capa['id'],
+                    $capa['grupo']
+                ]);
+                $idRuta = (int)$pdo->lastInsertId();
+                $stats['rutas_insert']++;
+                $stats['debug'][] = "🛤️ Ruta insertada: " . $capa['nombre'];
                 
-                // Primero insertar la ruta
-                $idRuta = insertar_ruta($pdo, [
-                    'id_umap' => $capa['id'],
-                    'nombre' => $capa['nombre'],
-                    'sentido' => $sentido,
-                    'color_hex' => $color,
-                    'id_grupo_umap' => $capa['grupo'],
-                ], $stats);
-                
-                // Buscar el lugar correspondiente para asociar
-                if ($idRuta > 0) {
-                    $candidatos = extraer_grupo_parentesis($capa['nombre']);
-                    foreach ($candidatos as $c) {
-                        $sel = $pdo->prepare("SELECT id_lugar FROM lugar_turistico WHERE grupo_umap LIKE ? OR nombre LIKE ? LIMIT 1");
-                        $sel->execute(["%$c%", "%$c%"]);
-                        $idLugar = $sel->fetchColumn();
-                        if ($idLugar) {
-                            asociar_ruta_lugar($pdo, $idRuta, (int)$idLugar, $stats);
-                        }
+                // Asociar con lugar
+                $parentesis = extraer_grupo_parentesis($capa['nombre']);
+                foreach ($parentesis as $p) {
+                    $sel = $pdo->prepare("SELECT id_lugar FROM lugar_turistico WHERE grupo_umap LIKE ? OR nombre LIKE ? LIMIT 1");
+                    $sel->execute(["%$p%", "%$p%"]);
+                    $idLugar = $sel->fetchColumn();
+                    if ($idLugar) {
+                        $sql2 = "INSERT IGNORE INTO ruta_lugar (id_ruta, id_lugar) VALUES (?, ?)";
+                        $stmt2 = $pdo->prepare($sql2);
+                        $stmt2->execute([$idRuta, $idLugar]);
+                        $stats['ruta_lugar_ok']++;
+                        $stats['debug'][] = "🔗 Asociación creada: " . $capa['nombre'] . " → lugar ID " . $idLugar;
                     }
                 }
             }
         }
     }
+    
+    $stats['debug'][] = "--- RESUMEN FINAL ---";
+    $stats['debug'][] = "Lugares insertados: " . $stats['lugares_insert'];
+    $stats['debug'][] = "Rutas insertadas: " . $stats['rutas_insert'];
+    $stats['debug'][] = "Asociaciones: " . $stats['ruta_lugar_ok'];
     
     // Guardar log
     $pdo->prepare("INSERT INTO sincronizacion_log 
