@@ -15,9 +15,10 @@ permissions:
   contents: write
 
 env:
-  # ⚠️ ID CORRECTO del mapa uMap LA-PAZ TURISTICO (no 1447967 - ese era otro mapa).
-  # Extraído de la URL: https://umap.openstreetmap.fr/en/map/la-paz-turistico_873950
+  # ⚠️ ID CORRECTO del mapa uMap (rutaslapaz_1451289)
   UMAP_MAP_ID: 1451289
+  # 🔥 Tu Worker de Cloudflare (PRIORIDAD #1)
+  UMAP_WORKER_URL: "https://umap-proxy-turismo.atenciobonillayoselin.workers.dev/?url="
   CAPAS_IDS: |
     8bfdeb7b-421c-4ff6-9643-53c75c3a88bc
     1131cb1a-631f-4d7b-8f33-f46a469366f9
@@ -37,20 +38,21 @@ jobs:
       - name: Checkout repositorio
         uses: actions/checkout@v4
 
-      - name: Instalar herramientas (curl, jq)
+      - name: Instalar herramientas (curl, jq, python3)
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq curl jq
+          sudo apt-get update -qq && sudo apt-get install -y -qq curl jq python3
 
       - name: Crear directorio de caché
         run: mkdir -p data/umap_cache
 
-      - name: Descargar GeoJSONs de uMap (multi-método con reintentos)
+      - name: Descargar GeoJSONs de uMap (Worker PRIORITARIO)
         id: descarga
         shell: bash
         env:
           UMAP_PROXY_URL: ${{ secrets.UMAP_PROXY_URL }}
           UMAP_TOKEN: ${{ secrets.UMAP_TOKEN }}
           MID: ${{ env.UMAP_MAP_ID }}
+          WORKER: ${{ env.UMAP_WORKER_URL }}
         run: |
           set +e
           OK_COUNT=0
@@ -67,10 +69,6 @@ jobs:
 
           build_url_variants() {
             local CID="$1"
-            # 🚨 URLs en ORDEN de preferencia:
-            # 1) NUEVA API v0.1 (OFICIAL uMap 2024+) - ENDPOINT PRINCIPAL
-            # 2) Variantes antiguas de compatibilidad (datalayer)
-            # 3) Otras instancias mirror (u.osmfr.org, umap.openstreetmap.de)
             echo "https://umap.openstreetmap.fr/api/0.1/map/${MID}/layer/${CID}/data/"
             echo "https://umap.openstreetmap.fr/api/0.1/map/${MID}/layer/${CID}/data?format=geojson"
             echo "https://umap.openstreetmap.fr/es/map/_/${MID}?data=${CID}&format=geojson"
@@ -87,7 +85,7 @@ jobs:
             local MAX_RETRIES=3
             for ((ATTEMPT=1; ATTEMPT<=MAX_RETRIES; ATTEMPT++)); do
               UA="${USER_AGENTS[$((RANDOM % ${#USER_AGENTS[@]}))]}"
-              RESP=$(curl -sSL --max-time 25 --retry 1 \
+              RESP=$(curl -sSL --max-time 30 --retry 2 \
                 -A "$UA" \
                 -H "Accept: application/geo+json, application/json, text/plain, */*" \
                 -H "Accept-Language: es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7" \
@@ -120,47 +118,85 @@ jobs:
             SUCCESS=0
             FINAL_BODY=""
 
-            echo "   Nivel 1/4: Descarga DIRECTA a uMap..."
-            URLS=$(build_url_variants "$CAPA_ID")
-            while IFS= read -r URL; do
-              RESULT=$(fetch_with_retry "$URL")
+            # ============================================================
+            # 🚀 NIVEL 1: Worker de Cloudflare (PRIORIDAD #1)
+            # ============================================================
+            echo "   Nivel 1/4: Worker de Cloudflare (MÁS RÁPIDO Y CONFIABLE)..."
+            FIRST_URL=$(build_url_variants "$CAPA_ID" | head -1)
+            PROXY_URL="${WORKER}$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$FIRST_URL")"
+            
+            # Probar con y sin cookie (si está configurada)
+            for TRY in 1 2; do
+              if [[ $TRY -eq 1 ]]; then
+                echo "      🔄 Intento 1/2: Worker sin cookie..."
+                EXTRA_H1=""
+              else
+                if [[ -n "$UMAP_TOKEN" ]]; then
+                  echo "      🔄 Intento 2/2: Worker + cookie de sesión..."
+                  EXTRA_H1="X-Proxy-Forward-Cookie: $UMAP_TOKEN"
+                else
+                  echo "      ⏭️  Sin cookie (no configurada)"
+                  break
+                fi
+              fi
+              RESULT=$(fetch_with_retry "$PROXY_URL" "$EXTRA_H1")
               if [[ -n "$RESULT" && "$RESULT" != "" ]]; then
                 FINAL_BODY="$RESULT"
-                echo "      ✅ OK → ${URL:0:70}..."
+                echo "      ✅ OK via Worker"$([ -n "$EXTRA_H1" ] && echo " + cookie")
                 SUCCESS=1
-                break
+                break 2
               fi
-            done <<< "$URLS"
+            done
 
+            # ============================================================
+            # NIVEL 2: Descarga DIRECTA a uMap (fallback)
+            # ============================================================
+            if [[ "$SUCCESS" -eq 0 ]]; then
+              echo "   Nivel 2/4: Descarga DIRECTA a uMap (fallback)..."
+              URLS=$(build_url_variants "$CAPA_ID")
+              while IFS= read -r URL; do
+                RESULT=$(fetch_with_retry "$URL")
+                if [[ -n "$RESULT" && "$RESULT" != "" ]]; then
+                  FINAL_BODY="$RESULT"
+                  echo "      ✅ OK → ${URL:0:70}..."
+                  SUCCESS=1
+                  break
+                fi
+              done <<< "$URLS"
+            fi
+
+            # ============================================================
+            # NIVEL 3: Cache LOCAL (si ya existe en el repo)
+            # ============================================================
+            if [[ "$SUCCESS" -eq 0 ]]; then
+              echo "   Nivel 3/4: Cache local (data/umap_cache/)..."
+              LOCAL_FILE="data/umap_cache/${CAPA_ID}.json"
+              if [[ -f "$LOCAL_FILE" && -s "$LOCAL_FILE" ]]; then
+                FINAL_BODY=$(cat "$LOCAL_FILE")
+                echo "      ✅ OK usando caché local existente"
+                SUCCESS=1
+              else
+                echo "      ❌ No hay caché local para esta capa"
+              fi
+            fi
+
+            # ============================================================
+            # NIVEL 4: Intentar con PROXY_URL desde secret (fallback)
+            # ============================================================
             if [[ "$SUCCESS" -eq 0 && -n "$UMAP_PROXY_URL" ]]; then
-              echo "   Nivel 2/4: Proxy Cloudflare Worker..."
-              FIRST_URL=$(build_url_variants "$CAPA_ID" | head -1)
-              PROXY_URL="${UMAP_PROXY_URL}$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$FIRST_URL")"
-              EXTRA_H1=""
-              EXTRA_H2=""
-              if [[ -n "$UMAP_TOKEN" ]]; then
-                EXTRA_H1="X-Proxy-Forward-Cookie: $UMAP_TOKEN"
-              fi
-              RESULT=$(fetch_with_retry "$PROXY_URL" "$EXTRA_H1" "$EXTRA_H2")
+              echo "   Nivel 4/4: Proxy alternativo (secret)..."
+              PROXY_ALT="${UMAP_PROXY_URL}$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$FIRST_URL")"
+              RESULT=$(fetch_with_retry "$PROXY_ALT")
               if [[ -n "$RESULT" && "$RESULT" != "" ]]; then
                 FINAL_BODY="$RESULT"
-                echo "      ✅ OK via proxy"
+                echo "      ✅ OK via proxy alternativo"
                 SUCCESS=1
               fi
             fi
 
-            if [[ "$SUCCESS" -eq 0 && -n "$UMAP_PROXY_URL" && -n "$UMAP_TOKEN" ]]; then
-              echo "   Nivel 3/4: Proxy + Cookie de sesión..."
-              FIRST_URL=$(build_url_variants "$CAPA_ID" | head -1)
-              PROXY_URL="${UMAP_PROXY_URL}$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$FIRST_URL")&$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "cookie=$UMAP_TOKEN")"
-              RESULT=$(fetch_with_retry "$PROXY_URL")
-              if [[ -n "$RESULT" && "$RESULT" != "" ]]; then
-                FINAL_BODY="$RESULT"
-                echo "      ✅ OK via proxy+cookie"
-                SUCCESS=1
-              fi
-            fi
-
+            # ============================================================
+            # Guardar resultado
+            # ============================================================
             if [[ "$SUCCESS" -eq 1 ]]; then
               FILE_PATH="data/umap_cache/${CAPA_ID}.json"
               if [[ -f "$FILE_PATH" ]]; then
@@ -179,7 +215,7 @@ jobs:
               echo "      💾 Guardado: $FEATS features, $BYTES bytes"
               OK_COUNT=$((OK_COUNT+1))
             else
-              echo "   ❌ Falló NIVEL 1-4 para $CAPA_ID"
+              echo "   ❌ Falló TODOS los niveles para $CAPA_ID"
               FAIL_COUNT=$((FAIL_COUNT+1))
             fi
             sleep 2
@@ -243,5 +279,3 @@ jobs:
           echo "Respuesta de Render (primeros 2000 chars):"
           echo "$SYNC_RESP" | head -c 2000
           echo ""
-
-

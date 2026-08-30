@@ -1,50 +1,33 @@
 <?php
 /**
  * sincronizar.php - Sincronización DEFINITIVA uMap → MySQL Aiven
- *
+ * 
  * 🏗️ ESTRATEGIA 6 NIVELES (anti-bloqueo 403 probada en producción):
  *
- *   NIVEL 1 → Descarga DIRECTA a uMap (varias URL + headers de navegador real)
- *   NIVEL 2 → Cloudflare Worker Proxy (GRATIS, 100k req/día, 270+ IPs rotadas)
- *   NIVEL 3 → Proxy + Cookie de sesión de uMap (si el mapa es privado)
- *   NIVEL 4 → Caché LOCAL (data/umap_cache/*.json) - actualizado por GitHub Action
- *   NIVEL 5 → Caché REMOTA GitHub Raw (si Render borró caché local en deploy)
- *   NIVEL 6 → Trigger GitHub Action Refresh + Wait (último recurso, ~90s)
- *             - Envía evento repository_dispatch via GitHub API
- *             - Espera a que el workflow suba los GeoJSON al repo
- *             - Luego vuelve a intentar GitHub Raw
+ *   NIVEL 1 → Cloudflare Worker Proxy (TU WORKER - MÁS RÁPIDO Y CONFIABLE)
+ *   NIVEL 2 → Worker + Cookie de sesión (si el mapa es privado)
+ *   NIVEL 3 → Descarga DIRECTA a uMap (varias URL + headers)
+ *   NIVEL 4 → Caché LOCAL (data/umap_cache/*.json)
+ *   NIVEL 5 → Caché REMOTA GitHub Raw
+ *   NIVEL 6 → Trigger GitHub Action Refresh + Wait
  *
- * ⚙️ VARIABLES DE ENTORNO EN RENDER.COM (TODAS son autodetectadas o configurables):
+ * ⚙️ VARIABLES DE ENTORNO EN RENDER.COM:
  *
  *   OBLIGATORIAS (BD):
  *     PDO_HOST      = mysql-3c89e575-turismo-la-paz.d.aivencloud.com
  *     PDO_PORT      = 23909
  *     PDO_DATABASE  = defaultdb
  *     PDO_USERNAME  = avnadmin
- *     PDO_PASSWORD  = (tu-password-aiven, SECRETO)
+ *     PDO_PASSWORD  = (tu-password-aiven)
  *     PDO_SSL_CA    = config/ca.pem
  *
- *   RECOMENDADAS (ANTI-BLOQUEO, en orden de prioridad):
+ *   RECOMENDADAS (ANTI-BLOQUEO):
  *     🔝 UMAP_PROXY_URL   = https://umap-proxy-turismo.TU_CUENTA.workers.dev/?url=
- *          (Deploy del Worker en config/cloudflare-worker-umap-proxy.js, GRATIS)
- *
+ *     🔝 UMAP_TOKEN       = sessionid=xxxx; csrftoken=xxxx; (opcional)
  *     🔝 GITHUB_RAW_BASE  = https://raw.githubusercontent.com/TU_USER/TU_REPO/main
- *          (Para fallback de caché remota, GRATIS)
- *
- *     🔝 UMAP_TOKEN       = sessionid=xxxx; csrftoken=xxxx; _ga=xxxx; ...etc
- *          (Cookie completa de uMap cuando inicias sesión en navegador)
- *
- *   OPCIONALES (solo para NIVEL 6 - Trigger GitHub via API):
- *     GITHUB_REPO        = TU_USER/TU_REPO (ej: "Atencio/turismo-api")
- *     GITHUB_TOKEN       = (GitHub Personal Access Token → repo:status + repo_deployment)
- *     GITHUB_WAIT_SECONDS= 120 (tiempo máximo de espera al workflow, default 90)
- *
- *   OPCIONALES (trigger callback):
- *     RENDER_SYNC_URL    = https://TU-SERVICE.onrender.com/api/sincronizar.php
- *          (Lo usa GitHub Actions para avisar a Render que hay caché nuevo)
  *
  * @package TurismoLaPaz
- * @version 3.0-definitivo (Solución completa anti-403)
+ * @version 4.0-worker-optimizado
  */
 
 error_reporting(E_ALL);
@@ -71,15 +54,18 @@ $DB_NAME = getenv('PDO_DATABASE') ?: 'defaultdb';
 $DB_USER = getenv('PDO_USERNAME') ?: 'avnadmin';
 $DB_PASS = getenv('PDO_PASSWORD') ?: '';
 
-// ⚠️ ID CORRECTO del mapa uMap LA-PAZ TURISTICO (no 1447967 - ese era otro mapa).
-// Extraído de la URL: https://umap.openstreetmap.fr/en/map/la-paz-turistico_873950
+// ⚠️ ID CORRECTO del mapa uMap LA-PAZ TURISTICO
 define('UMAP_MAP_ID', 1451289);
 define('UMAP_TIMEOUT', 40);
 define('CACHE_DIR', dirname(__DIR__) . '/data/umap_cache');
-define('CACHE_MAX_AGE_SECONDS', 60 * 60); // 1 hora → después trigger GHA
+define('CACHE_MAX_AGE_SECONDS', 60 * 60);
 
-$proxyRaw = trim(getenv('UMAP_PROXY_URL') ?: '');
-define('UMAP_PROXY_URLS', $proxyRaw === '' ? [] : array_values(array_filter(array_map('trim', explode(',', $proxyRaw)))));
+// 🔥 WORKER DE CLOUDFLARE - MÉTODO PRINCIPAL
+define('UMAP_PROXY_WORKER', 'https://umap-proxy-turismo.atenciobonillayoselin.workers.dev/?url=');
+
+// Fallback: si hay variable de entorno, usarla (para flexibilidad)
+$proxyEnv = trim(getenv('UMAP_PROXY_URL') ?: '');
+define('UMAP_PROXY_URLS', $proxyEnv === '' ? [UMAP_PROXY_WORKER] : array_values(array_filter(array_map('trim', explode(',', $proxyEnv)))));
 
 define('GITHUB_RAW_BASE', rtrim(getenv('GITHUB_RAW_BASE') ?: '', '/'));
 define('UMAP_TOKEN', trim(getenv('UMAP_TOKEN') ?: ''));
@@ -117,6 +103,9 @@ $stats = [
     'cache_status'     => [],
 ];
 
+// =========================================================================
+// CAPAS DEL MAPA (7 capas identificadas en tu uMap)
+// =========================================================================
 $capas = [
     ['id' => '8bfdeb7b-421c-4ff6-9643-53c75c3a88bc', 'nombre' => 'Minibus 254 - IDA (Mirador Montículo)',     'grupo' => 'Mirador Montículo'],
     ['id' => '1131cb1a-631f-4d7b-8f33-f46a469366f9', 'nombre' => 'Minibus 254 - VUELTA (Mirador Montículo)',  'grupo' => 'Mirador Montículo'],
@@ -154,11 +143,13 @@ try {
     if (!empty($sslCa) && file_exists($sslCa)) {
         $options[PDO::MYSQL_ATTR_SSL_CA] = $sslCa;
         $options[PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT] = false;
-    } else {
-        $options[PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT] = false;
     }
 
     $pdo = new PDO($dsn, $DB_USER, $DB_PASS, $options);
+    $pdo->exec("SET NAMES 'utf8mb4' COLLATE 'utf8mb4_spanish_ci'");
+    $pdo->exec("SET SESSION sql_mode = 'STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION'");
+    $pdo->exec("SET SESSION time_zone = '-04:00'");
+    
     $stats['debug'][] = "✅ Conexión BD exitosa → $DB_HOST:$DB_PORT/$DB_NAME (SSL=" . (!empty($sslCa) ? 'si' : 'no') . ")";
 } catch (PDOException $e) {
     http_response_code(500);
@@ -171,7 +162,7 @@ try {
 }
 
 // =========================================================================
-// MIGRACIÓN AUTOMÁTICA DE ESQUEMA (agrega columnas/tablas faltantes)
+// MIGRACIÓN AUTOMÁTICA DE ESQUEMA
 // =========================================================================
 function migrarEsquema(PDO $pdo, array &$stats): void {
     $mig = [];
@@ -199,16 +190,6 @@ function migrarEsquema(PDO $pdo, array &$stats): void {
             if (!in_array($col, $cols, true)) {
                 $pdo->exec("ALTER TABLE ruta $sqlAdd");
                 $mig[] = "ruta.$col";
-            }
-        }
-
-        $cols = $pdo->query("SHOW COLUMNS FROM parada")->fetchAll(PDO::FETCH_COLUMN, 0);
-        foreach ([
-            'id_umap' => "ADD COLUMN id_umap VARCHAR(100) NULL",
-        ] as $col => $sqlAdd) {
-            if (!in_array($col, $cols, true)) {
-                $pdo->exec("ALTER TABLE parada $sqlAdd");
-                $mig[] = "parada.$col";
             }
         }
 
@@ -249,10 +230,6 @@ migrarEsquema($pdo, $stats);
 
 function buildUrlVariants(string $capaId): array {
     $mid = UMAP_MAP_ID;
-    // 🚨 URLs en ORDEN de preferencia:
-    // 1) NUEVA API v0.1 (OFICIAL uMap 2024+) - ENDPOINT PRINCIPAL
-    // 2) Variantes antiguas de compatibilidad (datalayer)
-    // 3) Otras instancias mirror (u.osmfr.org, umap.openstreetmap.de)
     return [
         "https://umap.openstreetmap.fr/api/0.1/map/$mid/layer/$capaId/data/",
         "https://umap.openstreetmap.fr/api/0.1/map/$mid/layer/$capaId/data?format=geojson",
@@ -312,7 +289,6 @@ function curlGetRaw(string $url, array $extraHeaders = [], int $timeout = UMAP_T
         CURLOPT_HTTPHEADER     => array_merge($build['headers'], $extraHeaders),
         CURLOPT_REFERER        => 'https://umap.openstreetmap.fr/',
         CURLOPT_VERBOSE        => false,
-        CURLINFO_HEADER_OUT    => true,
     ]);
     $resp = curl_exec($ch);
     $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
@@ -340,55 +316,68 @@ function isGeoJsonValid(?array $data): bool {
     return true;
 }
 
-// ---------- NIVEL 1: Descarga DIRECTA a uMap ----------
+// ============================================================
+// 🚀 NIVEL 1: Worker de Cloudflare (TU WORKER - PRIORIDAD #1)
+// ============================================================
+function descargarConWorker(string $capaId, array &$stats, bool $withCookie = false): ?array {
+    if (empty(UMAP_PROXY_URLS)) return null;
+    
+    $targets = buildUrlVariants($capaId);
+    foreach (UMAP_PROXY_URLS as $proxyBase) {
+        foreach ($targets as $target) {
+            $encodedTarget = urlencode($target);
+            $proxyUrl = rtrim($proxyBase, '&?') . (str_contains($proxyBase, '?') ? '' : '') 
+                      . (str_contains($proxyBase, '=') ? $encodedTarget : 'url=' . $encodedTarget);
+            
+            $extraHeaders = [];
+            if ($withCookie && !empty(UMAP_TOKEN)) {
+                $extraHeaders[] = 'X-Proxy-Forward-Cookie: ' . UMAP_TOKEN;
+            }
+            
+            $r = curlGetRaw($proxyUrl, $extraHeaders, 35);
+            if ($r !== null && $r['code'] === 200) {
+                $data = parseJsonIfValid($r['body']);
+                if (isGeoJsonValid($data)) {
+                    $tag = $withCookie ? 'L1-worker+cookie' : 'L1-worker';
+                    $stats['debug'][] = "  ↳ ✅ $tag OK (Worker)";
+                    $stats['metodo_usado'][$capaId] = $tag;
+                    return $data;
+                }
+            }
+            if ($r !== null) {
+                $stats['debug'][] = "  ↳ L1-worker attempt → HTTP {$r['code']}, bytes=" . strlen($r['body'] ?? '');
+            }
+        }
+    }
+    return null;
+}
+
+// ---------- NIVEL 2: Descarga DIRECTA a uMap ----------
 function descargarDirecto(string $capaId, array &$stats): ?array {
     foreach (buildUrlVariants($capaId) as $i => $url) {
         $r = curlGetRaw($url);
         if ($r !== null && $r['code'] === 200) {
             $data = parseJsonIfValid($r['body']);
             if (isGeoJsonValid($data)) {
-                $stats['debug'][] = "  ↳ ✅ Nivel1 Directo OK (variant $i, URL=" . parse_url($url, PHP_URL_HOST) . ")";
-                $stats['metodo_usado'][$capaId] = 'L1-directo';
+                $stats['debug'][] = "  ↳ ✅ Nivel2 Directo OK (variant $i)";
+                $stats['metodo_usado'][$capaId] = 'L2-directo';
                 return $data;
             }
         }
         if ($r !== null) {
-            $stats['debug'][] = "  ↳ L1 variant $i → HTTP {$r['code']}, bytes=" . strlen($r['body'] ?? '');
+            $stats['debug'][] = "  ↳ L2 variant $i → HTTP {$r['code']}, bytes=" . strlen($r['body'] ?? '');
         }
     }
     return null;
 }
 
-// ---------- NIVEL 2: Proxy Cloudflare Worker (1 o más proxies) ----------
-function descargarConProxy(string $capaId, array &$stats, bool $withCookie = false): ?array {
-    if (empty(UMAP_PROXY_URLS)) return null;
-    $targets = buildUrlVariants($capaId);
-    foreach (UMAP_PROXY_URLS as $proxyIdx => $proxyBase) {
-        foreach ($targets as $tIdx => $target) {
-            $encodedTarget = urlencode($target);
-            $proxyUrl = rtrim($proxyBase, '&?') . (str_contains($proxyBase, '?') ? '' : '')
-                      . (str_contains($proxyBase, '=') ? $encodedTarget : 'url=' . $encodedTarget);
-            if ($withCookie && !empty(UMAP_TOKEN)) {
-                $extraHeader = ['X-Proxy-Forward-Cookie: ' . UMAP_TOKEN];
-            } else {
-                $extraHeader = ['X-Proxy-Target: umap'];
-            }
-            $r = curlGetRaw($proxyUrl, $extraHeader, 35);
-            if ($r !== null && $r['code'] === 200) {
-                $data = parseJsonIfValid($r['body']);
-                if (isGeoJsonValid($data)) {
-                    $tag = $withCookie ? 'L3-proxy+cookie' : 'L2-proxy';
-                    $stats['debug'][] = "  ↳ ✅ $tag OK (proxy#$proxyIdx, target#$tIdx, host=" . parse_url($proxyBase, PHP_URL_HOST) . ")";
-                    $stats['metodo_usado'][$capaId] = $tag;
-                    return $data;
-                }
-            }
-        }
-    }
-    return null;
+// ---------- NIVEL 3: Proxy + Cookie (fallback) ----------
+function descargarConProxyCookie(string $capaId, array &$stats): ?array {
+    if (empty(UMAP_PROXY_URLS) || empty(UMAP_TOKEN)) return null;
+    return descargarConWorker($capaId, $stats, true);
 }
 
-// ---------- NIVEL 4: Caché LOCAL del repo (actualizado por GitHub Actions) ----------
+// ---------- NIVEL 4: Caché LOCAL ----------
 function descargarDeCacheLocal(string $capaId, array &$stats, bool $forceAcceptStale = false): ?array {
     $file = CACHE_DIR . '/' . $capaId . '.json';
     if (!is_file($file) || !is_readable($file)) return null;
@@ -402,7 +391,7 @@ function descargarDeCacheLocal(string $capaId, array &$stats, bool $forceAcceptS
         'local_fresh'   => $edadSegundos <= CACHE_MAX_AGE_SECONDS ? 'si' : 'no',
     ];
     if (!$forceAcceptStale && $edadSegundos > CACHE_MAX_AGE_SECONDS) {
-        $stats['debug'][] = "  ↳ ⚠️ Cache LOCAL caducada (" . round($edadSegundos/60,0) . " min > " . (CACHE_MAX_AGE_SECONDS/60) . " min permitidos)";
+        $stats['debug'][] = "  ↳ ⚠️ Cache LOCAL caducada (" . round($edadSegundos/60,0) . " min > " . (CACHE_MAX_AGE_SECONDS/60) . " min)";
         return null;
     }
     $stats['debug'][] = "  ↳ ✅ L4 Cache LOCAL OK (" . round($edadSegundos/60,0) . " min, features=" . count($data['features']) . ")";
@@ -410,7 +399,7 @@ function descargarDeCacheLocal(string $capaId, array &$stats, bool $forceAcceptS
     return $data;
 }
 
-// ---------- NIVEL 5: Caché REMOTA GitHub Raw ----------
+// ---------- NIVEL 5: GitHub Raw ----------
 function descargarDeGithubRaw(string $capaId, array &$stats): ?array {
     if (empty(GITHUB_RAW_BASE)) return null;
     $url = GITHUB_RAW_BASE . "/data/umap_cache/$capaId.json";
@@ -432,7 +421,7 @@ function descargarDeGithubRaw(string $capaId, array &$stats): ?array {
     return null;
 }
 
-// ---------- NIVEL 6: Trigger GitHub Action + Wait for cache ----------
+// ---------- NIVEL 6: Trigger GitHub Action ----------
 function triggerGhaAndWait(array &$stats, array $capasPendientes): bool {
     if (empty(GITHUB_REPO) || empty(GITHUB_TOKEN)) {
         $stats['debug'][] = "  ↳ ⏭️ L6 Skip: faltan GITHUB_REPO o GITHUB_TOKEN";
@@ -443,7 +432,7 @@ function triggerGhaAndWait(array &$stats, array $capasPendientes): bool {
     $payload = json_encode([
         'event_type' => 'refresh-umap-cache',
         'client_payload' => [
-            'triggered_by' => 'render-sync-v3',
+            'triggered_by' => 'render-sync-v4',
             'triggered_at' => date('c'),
             'capas_pendientes' => array_column($capasPendientes, 'id'),
         ],
@@ -454,7 +443,7 @@ function triggerGhaAndWait(array &$stats, array $capasPendientes): bool {
         'X-GitHub-Api-Version: 2022-11-28',
         'Content-Type: application/json',
         'Content-Length: ' . strlen($payload),
-    ], 30, 'Render-Sync-Client/3.0');
+    ], 30, 'Render-Sync-Client/4.0');
     if ($r === null) {
         $stats['debug'][] = "  ↳ ❌ L6: no se pudo contactar GitHub API";
         return false;
@@ -490,21 +479,33 @@ function triggerGhaAndWait(array &$stats, array $capasPendientes): bool {
 function descargarCapaMultiNivel(array $capa, array &$stats, bool $allowGhaTrigger = true): ?array {
     $capaId = $capa['id'];
 
+    // 🚀 NIVEL 1: Worker de Cloudflare (TU WORKER - PRIORIDAD #1)
+    $data = descargarConWorker($capaId, $stats, false);
+    if (isGeoJsonValid($data)) return $data;
+
+    // NIVEL 2: Worker + Cookie (si el mapa es privado)
+    $data = descargarConProxyCookie($capaId, $stats);
+    if (isGeoJsonValid($data)) return $data;
+
+    // NIVEL 3: Descarga DIRECTA a uMap (fallback)
     $data = descargarDirecto($capaId, $stats);
     if (isGeoJsonValid($data)) return $data;
 
-    $data = descargarConProxy($capaId, $stats, false);
-    if (isGeoJsonValid($data)) return $data;
-
-    $data = descargarConProxy($capaId, $stats, true);
-    if (isGeoJsonValid($data)) return $data;
-
+    // NIVEL 4: Cache LOCAL
     $data = descargarDeCacheLocal($capaId, $stats, false);
     if (isGeoJsonValid($data)) return $data;
 
+    // NIVEL 5: GitHub Raw
     $data = descargarDeGithubRaw($capaId, $stats);
     if (isGeoJsonValid($data)) return $data;
 
+    // NIVEL 6: Trigger GHA + Wait (solo si permitido)
+    if ($allowGhaTrigger && !empty(GITHUB_REPO) && !empty(GITHUB_TOKEN)) {
+        $stats['debug'][] = "  ↳ 🔄 L6: Intentando trigger GitHub para $capaId";
+        // Esta función se llama desde el bucle principal con las capas pendientes
+    }
+
+    // Último recurso: cache local caducada
     $data = descargarDeCacheLocal($capaId, $stats, true);
     if (isGeoJsonValid($data)) {
         $stats['warnings'][] = "⚠️ {$capa['nombre']}: usando caché LOCAL caducada (fallback final)";
@@ -543,8 +544,8 @@ function extraer_grupo_parentesis(string $nombre): array {
 // EJECUCIÓN PRINCIPAL
 // =========================================================================
 try {
-    $stats['debug'][] = "🚀 Iniciando sincronización v3.0 → uMap#" . UMAP_MAP_ID . " → BD";
-    $stats['debug'][] = "🧱 Estrategia: L1 Directo → L2 Proxy → L3 Proxy+Cookie → L4 CacheLocal → L5 GHRaw → L6 GHA-Trigger";
+    $stats['debug'][] = "🚀 Iniciando sincronización v4.0-worker → uMap#" . UMAP_MAP_ID . " → BD";
+    $stats['debug'][] = "🧱 Estrategia: L1 Worker → L2 Worker+Cookie → L3 Directo → L4 CacheLocal → L5 GHRaw → L6 GHA-Trigger";
     $stats['total_capas'] = count($capas);
     $metodoGlobal = [];
 
@@ -595,8 +596,7 @@ try {
     if ($stats['capas_ok'] === 0) {
         throw new RuntimeException(
             "CRÍTICO: No se pudieron descargar datos para NINGUNA de las " . count($capas) . " capas. "
-            . "Necesitas configurar UMAP_PROXY_URL ó GITHUB_RAW_BASE en Render.com Environment Variables. "
-            . "Pasos detallados en config/cloudflare-worker-umap-proxy.js"
+            . "Verifica que tu Worker de Cloudflare esté funcionando: " . UMAP_PROXY_WORKER
         );
     }
     if (!empty($capasPendientes)) {
@@ -617,7 +617,7 @@ try {
     $pdo->exec("DELETE FROM parada");
     $pdo->exec("ALTER TABLE parada AUTO_INCREMENT = 1");
     $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
-    $stats['debug'][] = "🧹 Tablas limpiadas correctamente (ruta, lugar_turistico, parada, N:M)";
+    $stats['debug'][] = "🧹 Tablas limpiadas correctamente";
 
     foreach ($capasConDatos as $cid => $info) {
         $capa = $info['meta'];
@@ -795,8 +795,10 @@ try {
         'success' => ($status !== 'ERROR'),
         'status'  => $status,
         'map_id'  => UMAP_MAP_ID,
-        'version' => '3.0-definitivo',
+        'version' => '4.0-worker-optimizado',
         'metodo_descarga_principal' => $metodoPrincipal,
+        'worker_used' => strpos($metodoPrincipal, 'L1-worker') !== false,
+        'worker_url' => UMAP_PROXY_WORKER,
         'gha_triggered' => $stats['gha_triggered'],
         'capas_pendientes' => count($capasPendientes),
         'stats'   => [
@@ -823,11 +825,11 @@ try {
         'schema_migration' => $stats['schema_migration'],
         'cache_status'     => $stats['cache_status'],
         'setup_checklist' => [
+            'Worker_URL' => UMAP_PROXY_WORKER,
             'UMAP_PROXY_URL_configurado'  => !empty(UMAP_PROXY_URLS),
             'GITHUB_RAW_BASE_configurado' => !empty(GITHUB_RAW_BASE),
             'UMAP_TOKEN_configurado'      => !empty(UMAP_TOKEN),
             'GITHUB_API_configurado'      => !empty(GITHUB_REPO) && !empty(GITHUB_TOKEN),
-            'Proxy_CFWorker_documentacion'=> 'config/cloudflare-worker-umap-proxy.js',
         ],
         'timestamp' => date('Y-m-d H:i:s'),
     ];
@@ -846,10 +848,9 @@ try {
         'stats'   => $stats,
         'debug'   => $stats['debug'],
         'setup_hint' => [
-            'Paso 1' => 'Configura UMAP_PROXY_URL con tu Cloudflare Worker (más fácil)',
-            'Paso 2' => 'Ó configura GITHUB_RAW_BASE para usar el caché del repo',
-            'Paso 3' => 'Agrega UMAP_TOKEN (cookie de sesión de uMap) para mapas privados',
-            'Paso 4' => 'Ver código y docs en config/cloudflare-worker-umap-proxy.js',
+            'Paso 1' => 'Verifica que tu Worker de Cloudflare esté desplegado',
+            'Paso 2' => 'Prueba: ' . UMAP_PROXY_WORKER . 'https://umap.openstreetmap.fr/api/0.1/map/1451289/layer/8bfdeb7b-421c-4ff6-9643-53c75c3a88bc/data/',
+            'Paso 3' => 'Configura UMAP_PROXY_URL en Render.com si usas otro Worker',
         ],
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
 }
