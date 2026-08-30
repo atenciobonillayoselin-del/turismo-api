@@ -73,7 +73,7 @@ $DB_PASS = getenv('PDO_PASSWORD') ?: '';
 
 // ⚠️ ID CORRECTO del mapa uMap LA-PAZ TURISTICO (no 1447967 - ese era otro mapa).
 // Extraído de la URL: https://umap.openstreetmap.fr/en/map/la-paz-turistico_873950
-define('UMAP_MAP_ID', 1447967);
+define('UMAP_MAP_ID', 1451289);
 define('UMAP_TIMEOUT', 40);
 define('CACHE_DIR', dirname(__DIR__) . '/data/umap_cache');
 define('CACHE_MAX_AGE_SECONDS', 60 * 60); // 1 hora → después trigger GHA
