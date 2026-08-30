@@ -1,0 +1,16 @@
+vendor/
+composer.lock
+.env
+.env.local
+*.log
+.DS_Store
+Thumbs.db
+node_modules/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+data/umap_cache/*.json
+!data/umap_cache/.gitkeep
+!data/umap_cache/README.md

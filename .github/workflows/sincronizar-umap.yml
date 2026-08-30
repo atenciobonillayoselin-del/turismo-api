@@ -1,0 +1,236 @@
+name: Sincronizar caché de uMap
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+  repository_dispatch:
+    types: [refresh-umap-cache, sync-umap]
+  push:
+    branches: [main, master]
+    paths:
+      - '.github/workflows/sincronizar-umap.yml'
+
+permissions:
+  contents: write
+
+env:
+  UMAP_MAP_ID: 1447967
+  CAPAS_IDS: |
+    8bfdeb7b-421c-4ff6-9643-53c75c3a88bc
+    1131cb1a-631f-4d7b-8f33-f46a469366f9
+    34f4c3be-3ec9-400b-9b82-c3be983df2dd
+    ce66785e-ee35-4de4-b5d8-3ab0d57e1e47
+    fa904f68-9ee2-4e12-b3a4-8406f357def5
+    0a5a5bfc-8c95-4fea-8400-3a8438a2b533
+    291c212e-44db-4460-b84e-773bcfede107
+
+jobs:
+  sincronizar-cache:
+    runs-on: ubuntu-latest
+    name: Descargar GeoJSONs de uMap al caché del repo
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Instalar herramientas (curl, jq)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq curl jq
+
+      - name: Crear directorio de caché
+        run: mkdir -p data/umap_cache
+
+      - name: Descargar GeoJSONs de uMap (multi-método con reintentos)
+        id: descarga
+        shell: bash
+        env:
+          UMAP_PROXY_URL: ${{ secrets.UMAP_PROXY_URL }}
+          UMAP_TOKEN: ${{ secrets.UMAP_TOKEN }}
+          MID: ${{ env.UMAP_MAP_ID }}
+        run: |
+          set +e
+          OK_COUNT=0
+          FAIL_COUNT=0
+          SKIP_COUNT=0
+
+          USER_AGENTS=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0"
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15"
+          )
+
+          build_url_variants() {
+            local CID="$1"
+            echo "https://umap.openstreetmap.fr/es/datalayer/${MID}/${CID}/?format=geojson"
+            echo "https://umap.openstreetmap.fr/en/datalayer/${MID}/${CID}/?format=geojson"
+            echo "https://umap.openstreetmap.fr/es/datalayer/${MID}/${CID}/"
+            echo "https://u.osmfr.org/m/${MID}/datalayer/${CID}/"
+            echo "https://umap.openstreetmap.de/de/datalayer/${MID}/${CID}/?format=geojson"
+          }
+
+          fetch_with_retry() {
+            local URL="$1"
+            local EXTRA_HEADERS=("$2" "$3")
+            local MAX_RETRIES=3
+            for ((ATTEMPT=1; ATTEMPT<=MAX_RETRIES; ATTEMPT++)); do
+              UA="${USER_AGENTS[$((RANDOM % ${#USER_AGENTS[@]}))]}"
+              RESP=$(curl -sSL --max-time 25 --retry 1 \
+                -A "$UA" \
+                -H "Accept: application/geo+json, application/json, text/plain, */*" \
+                -H "Accept-Language: es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7" \
+                -H "Referer: https://umap.openstreetmap.fr/" \
+                -H "Origin: https://umap.openstreetmap.fr" \
+                -H "Sec-Fetch-Dest: document" \
+                -H "Sec-Fetch-Mode: navigate" \
+                -H "Cache-Control: no-cache" \
+                -H "Pragma: no-cache" \
+                ${EXTRA_HEADERS[@]/#/-H } \
+                -w "\n__HTTP:%{http_code}__\n__SIZE:%{size_download}__\n" \
+                "$URL" 2>/dev/null)
+              CODE=$(echo "$RESP" | grep -oP '__HTTP:\K[0-9]+' | tail -1)
+              SIZE=$(echo "$RESP" | grep -oP '__SIZE:\K[0-9]+' | tail -1)
+              BODY=$(echo "$RESP" | sed '/^__HTTP:/d;/^__SIZE:/d')
+              if [[ "$CODE" == "200" && "$SIZE" -gt 150 ]] 2>/dev/null; then
+                if echo "$BODY" | jq -e 'type == "object" and (.features != null)' >/dev/null 2>&1; then
+                  echo "$BODY"
+                  return 0
+                fi
+              fi
+              sleep $((1 + ATTEMPT))
+            done
+            return 1
+          }
+
+          while IFS= read -r CAPA_ID; do
+            [[ -z "$CAPA_ID" ]] && continue
+            echo -e "\n🔄 Procesando capa: $CAPA_ID"
+            SUCCESS=0
+            FINAL_BODY=""
+
+            echo "   Nivel 1/4: Descarga DIRECTA a uMap..."
+            URLS=$(build_url_variants "$CAPA_ID")
+            while IFS= read -r URL; do
+              RESULT=$(fetch_with_retry "$URL")
+              if [[ -n "$RESULT" && "$RESULT" != "" ]]; then
+                FINAL_BODY="$RESULT"
+                echo "      ✅ OK → ${URL:0:70}..."
+                SUCCESS=1
+                break
+              fi
+            done <<< "$URLS"
+
+            if [[ "$SUCCESS" -eq 0 && -n "$UMAP_PROXY_URL" ]]; then
+              echo "   Nivel 2/4: Proxy Cloudflare Worker..."
+              FIRST_URL=$(build_url_variants "$CAPA_ID" | head -1)
+              PROXY_URL="${UMAP_PROXY_URL}$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$FIRST_URL")"
+              EXTRA_H1=""
+              EXTRA_H2=""
+              if [[ -n "$UMAP_TOKEN" ]]; then
+                EXTRA_H1="X-Proxy-Forward-Cookie: $UMAP_TOKEN"
+              fi
+              RESULT=$(fetch_with_retry "$PROXY_URL" "$EXTRA_H1" "$EXTRA_H2")
+              if [[ -n "$RESULT" && "$RESULT" != "" ]]; then
+                FINAL_BODY="$RESULT"
+                echo "      ✅ OK via proxy"
+                SUCCESS=1
+              fi
+            fi
+
+            if [[ "$SUCCESS" -eq 0 && -n "$UMAP_PROXY_URL" && -n "$UMAP_TOKEN" ]]; then
+              echo "   Nivel 3/4: Proxy + Cookie de sesión..."
+              FIRST_URL=$(build_url_variants "$CAPA_ID" | head -1)
+              PROXY_URL="${UMAP_PROXY_URL}$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$FIRST_URL")&$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "cookie=$UMAP_TOKEN")"
+              RESULT=$(fetch_with_retry "$PROXY_URL")
+              if [[ -n "$RESULT" && "$RESULT" != "" ]]; then
+                FINAL_BODY="$RESULT"
+                echo "      ✅ OK via proxy+cookie"
+                SUCCESS=1
+              fi
+            fi
+
+            if [[ "$SUCCESS" -eq 1 ]]; then
+              FILE_PATH="data/umap_cache/${CAPA_ID}.json"
+              if [[ -f "$FILE_PATH" ]]; then
+                OLD_MD5=$(md5sum "$FILE_PATH" | cut -d' ' -f1)
+                NEW_MD5=$(echo "$FINAL_BODY" | md5sum | cut -d' ' -f1)
+                if [[ "$OLD_MD5" == "$NEW_MD5" ]]; then
+                  echo "      ℹ️  Sin cambios, skip commit para este archivo"
+                  SKIP_COUNT=$((SKIP_COUNT+1))
+                  OK_COUNT=$((OK_COUNT+1))
+                  continue
+                fi
+              fi
+              echo "$FINAL_BODY" | jq -c '.' > "$FILE_PATH" 2>/dev/null || echo "$FINAL_BODY" > "$FILE_PATH"
+              FEATS=$(jq '.features | length' "$FILE_PATH" 2>/dev/null || echo "?")
+              BYTES=$(wc -c < "$FILE_PATH")
+              echo "      💾 Guardado: $FEATS features, $BYTES bytes"
+              OK_COUNT=$((OK_COUNT+1))
+            else
+              echo "   ❌ Falló NIVEL 1-4 para $CAPA_ID"
+              FAIL_COUNT=$((FAIL_COUNT+1))
+            fi
+            sleep 2
+          done <<< "$CAPAS_IDS"
+
+          echo -e "\n\n📊 Resumen final:"
+          echo "   OK:     $OK_COUNT capas descargadas"
+          echo "   Skip:   $SKIP_COUNT capas (sin cambios)"
+          echo "   Fallos: $FAIL_COUNT capas"
+
+          echo "ok_count=$OK_COUNT" >> "$GITHUB_OUTPUT"
+          echo "fail_count=$FAIL_COUNT" >> "$GITHUB_OUTPUT"
+          echo "skip_count=$SKIP_COUNT" >> "$GITHUB_OUTPUT"
+
+          TOTAL=$((OK_COUNT + FAIL_COUNT))
+          [[ "$OK_COUNT" -eq 0 ]] && { echo "❌ CRÍTICO: Ninguna capa descargada"; exit 1; }
+          [[ "$FAIL_COUNT" -gt "$((TOTAL / 2))" ]] && { echo "⚠️ Advertencia: Más del 50% falló, pero continuando..."; }
+          true
+
+      - name: Verificar archivos descargados
+        run: |
+          echo "=== Contenido del caché (data/umap_cache/) ==="
+          ls -lah data/umap_cache/ || true
+          echo ""
+          TOTAL_FEATS=0
+          for f in data/umap_cache/*.json; do
+            if [[ -f "$f" ]]; then
+              FEATURES=$(jq '.features | length' "$f" 2>/dev/null || echo "ERROR")
+              TIPO=$(jq -r '.type' "$f" 2>/dev/null || echo "?")
+              echo "  $(basename $f): $FEATURES features, tipo=$TIPO, $(wc -c < $f) bytes"
+              [[ "$FEATURES" =~ ^[0-9]+$ ]] && TOTAL_FEATS=$((TOTAL_FEATS + FEATURES))
+            fi
+          done
+          echo -e "\nTotal features en caché: $TOTAL_FEATS"
+
+      - name: Commit y push del caché actualizado
+        id: commit
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/umap_cache/*.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "ℹ️  Sin cambios en el caché - no se hace commit"
+            echo "cambios=no" >> "$GITHUB_OUTPUT"
+          else
+            TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+            TRIGGER="${GITHUB_EVENT_NAME:-manual}"
+            git commit -m "🔄 cache(umap): actualizar GeoJSONs - ${TIMESTAMP} [${TRIGGER}]"
+            git push
+            echo "✅ Caché actualizado y subido al repositorio"
+            echo "cambios=si" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notificar a Render.com para sincronizar BD
+        if: steps.commit.outputs.cambios == 'si' && env.RENDER_SYNC_URL != ''
+        env:
+          RENDER_SYNC_URL: ${{ secrets.RENDER_SYNC_URL }}
+        run: |
+          echo "🔔 Triggering sincronización BD en Render: ${RENDER_SYNC_URL:0:50}..."
+          SYNC_RESP=$(curl -sSL --max-time 120 -w "\nHTTP:%{http_code}" "$RENDER_SYNC_URL" 2>/dev/null || true)
+          echo "Respuesta de Render (primeros 2000 chars):"
+          echo "$SYNC_RESP" | head -c 2000
+          echo ""

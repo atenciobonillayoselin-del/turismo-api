@@ -1,20 +1,160 @@
+# ============================================================
+# Render.com - Blueprint de despliegue
+# Archivo: render.yaml
+# ============================================================
+# USO:
+#   1. Haz commit y push de ESTE archivo a tu repositorio GitHub
+#   2. En Render.com → "Blueprints" → "New Blueprint Instance"
+#   3. Conecta tu repositorio → Render detecta este render.yaml
+#   4. Completa los Environment Variables marcados como "sync: false"
+#      (los secretos NUNCA van en texto plano aquí)
+#
+# CRON AUTOMÁTICO:
+#   Render NO tiene cron gratuito. Para auto-sincronizar cada 15 min:
+#   → Usa el GitHub Action incluido (.github/workflows/sincronizar-umap.yml)
+#   → Ya viene configurado con cron: '*/15 * * * *'
+#   → Si hay cambios en caché, llama a RENDER_SYNC_URL para actualizar BD
+#
+# MANUAL: Visita → https://TU-SERVICIO.onrender.com/api/sincronizar.php?refresh=1
+# ============================================================
+
 services:
   - type: web
     name: turismo-api
     runtime: php
-    buildCommand: composer install --no-dev || true
-    startCommand: php -S 0.0.0.0:$PORT -t .
+    plan: free
+
+    buildCommand: |
+      echo "=== Build Turismo La Paz API ==="
+      composer install --no-dev 2>/dev/null || true
+      ls -la
+      echo "=== Build OK ==="
+
+    startCommand: |
+      echo "🚀 Starting PHP server on port $PORT..."
+      php -S 0.0.0.0:$PORT -t .
+
+    # ============================================================
+    # ENVIRONMENT VARIABLES
+    # ============================================================
+    # Cada variable:
+    #   sync: false → NO sincronizar con otros servicios (es SECRETA)
+    #   sync: true  → ya viene con valor por defecto
+    # ============================================================
     envVars:
+
+      # ============================================================
+      # 🟥 OBLIGATORIAS - BASE DE DATOS AIVEN MYSQL
+      # ============================================================
       - key: PDO_HOST
         sync: false
+        description: "Host MySQL Aiven → mysql-3c89e575-turismo-la-paz.d.aivencloud.com"
+
       - key: PDO_PORT
         sync: false
+        description: "Puerto MySQL Aiven → 23909"
+
       - key: PDO_DATABASE
-        value: app_turistica_la_paz
+        value: defaultdb
+        description: "Nombre de la BD en Aiven → defaultdb"
+
       - key: PDO_USERNAME
         sync: false
+        description: "Usuario MySQL Aiven → avnadmin"
+
       - key: PDO_PASSWORD
         sync: false
+        description: "🔑 CONTRASEÑA MySQL Aiven (REQUIRED - no dejar vacío)"
+
       - key: PDO_SSL_CA
         value: config/ca.pem
-    plan: free
+        description: "Ruta al certificado SSL CA de Aiven → config/ca.pem"
+
+      # ============================================================
+      # 🟧 RECOMENDADAS - ANTI-BLOQUEO 403 (EL ORDEN IMPORTA)
+      # ============================================================
+      - key: UMAP_PROXY_URL
+        sync: false
+        description: |
+          🔝 [ANTI-403 NIVEL 2 y 3 - RECOMENDADO PRIMERO]
+          Cloudflare Worker Proxy URL GRATIS.
+          DEPLOY: Copia el código de config/cloudflare-worker-umap-proxy.js
+                  a dash.cloudflare.com → Workers → Create Worker
+          VALOR ejemplo: https://umap-proxy-turismo.TU_CUENTA.workers.dev/?url=
+          (importante: termina con ?url=  sino no funciona)
+
+      - key: GITHUB_RAW_BASE
+        sync: false
+        description: |
+          🔝 [ANTI-403 NIVEL 4 y 5 - SEGUNDA OPCIÓN]
+          Caché remota GitHub Raw (si tu proxy Cloudflare no funciona).
+          VALOR ejemplo: https://raw.githubusercontent.com/TU_USUARIO/turismo_api/main
+          NOTA: El GitHub Action sube archivos a data/umap_cache/*.json cada 15 min.
+
+      - key: UMAP_TOKEN
+        sync: false
+        description: |
+          (OPCIONAL pero MUY RECOMENDADO si tu mapa es privado o 403 persiste)
+          Cookie COMPLETA de sesión de uMap.openstreetmap.fr cuando inicias sesión en Chrome/Firefox.
+          COMO OBTENERLA:
+            1. Abre umap.openstreetmap.fr en navegador → INICIA SESIÓN con tu cuenta OSM
+            2. F12 → Network → Recarga → click en CUALQUIER request a umap.openstreetmap.fr
+            3. En "Request Headers", busca la línea que empieza con "Cookie: "
+            4. COPIA TODO el valor DESPUÉS de "Cookie: "
+            5. Pégalo aquí (será MUY LARGO: ~500-2000 chars, es normal)
+          Formato ejemplo: sessionid=abc123; csrftoken=xyz789; _ga=GA1...; _gid=GA1...; etc...
+
+      # ============================================================
+      # 🟨 OPCIONALES - NIVEL 6 (último recurso, solo si NIVEL 1-5 fallan)
+      # ============================================================
+      - key: GITHUB_REPO
+        sync: false
+        description: |
+          (OPCIONAL - NIVEL 6) Tu repo GitHub para trigger el workflow via API.
+          Formato: TU_USUARIO/turismo-api   (sin .git)
+          Ejemplo: Atencio/turismo-api
+
+      - key: GITHUB_TOKEN
+        sync: false
+        description: |
+          (OPCIONAL - NIVEL 6) GitHub Personal Access Token (classic).
+          CREARLO EN: github.com → Settings → Developer settings → Personal access tokens → Tokens (classic)
+          PERMISOS MÍNIMOS:
+            ✅ repo → repo:status   (para trigger workflow)
+            ✅ repo → repo_deployment
+            ✅ (si el repo es privado) repo → repo (full control)
+          EXPIRACIÓN: 90 días recomendado
+
+      - key: GITHUB_WAIT_SECONDS
+        value: "120"
+        description: |
+          (OPCIONAL) Segundos máximos de espera al GitHub Workflow en NIVEL 6.
+          Default 90s, puede subirse a 120-180 si tienes conexión lenta.
+
+      # ============================================================
+      # 🟩 OPCIONAL - NOTIFICACIÓN DESDE GITHUB ACTIONS
+      # ============================================================
+      - key: RENDER_SYNC_URL
+        sync: false
+        description: |
+          (OPCIONAL) URL completa de sincronizar.php en ESTE servicio.
+          El GitHub Action llama a esta URL cuando sube caché NUEVA al repo.
+          VALOR ejemplo: https://turismo-api-abc123.onrender.com/api/sincronizar.php
+          (Busca tu URL real en el Dashboard de Render)
+
+    autoDeploy: true
+    pullPreviews: false
+
+# ============================================================
+# 🔑 VERIFICACIÓN RÁPIDA (después de deployar):
+# ============================================================
+# 1. Abre → https://TU-SERVICIO.onrender.com/api/test_connection.php
+#    Debería decir: "✅ Conexión exitosa"
+#
+# 2. Abre → https://TU-SERVICIO.onrender.com/api/sincronizar.php
+#    (primera vez tardará 30-90s porque prueba TODOS los niveles)
+#    Resultado esperado: "success": true, "metodo_descarga_principal": "L2-proxy" o "L5-github_raw"
+#
+# 3. Abre → https://TU-SERVICIO.onrender.com/api/lugares.php
+#    Debería devolver JSON con tus 20+ lugares turísticos
+# ============================================================
