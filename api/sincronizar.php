@@ -1,6 +1,6 @@
 <?php
 /**
- * sincronizar.php - VERSIÓN OPTIMIZADA PARA RENDER
+ * sincronizar.php - VERSIÓN CON URL CORREGIDA
  */
 
 error_reporting(E_ALL);
@@ -127,8 +127,9 @@ try {
     $stats['debug'][] = "🧹 Tablas limpiadas";
     
     foreach ($capas as $capa) {
-        $url = "https://umap.openstreetmap.fr/es/datalayer/{$capa['id']}/?format=geojson";
-        $stats['debug'][] = "📥 Descargando: " . $capa['nombre'];
+        // ⭐ URL CORREGIDA: incluye map_id
+        $url = "https://umap.openstreetmap.fr/es/datalayer/" . UMAP_MAP_ID . "/{$capa['id']}/?format=geojson";
+        $stats['debug'][] = "📥 Descargando: " . $capa['nombre'] . " (URL: $url)";
         
         try {
             $data = descargar_url($url);
@@ -139,7 +140,7 @@ try {
                 continue;
             }
             
-            $stats['debug'][] = "✅ Descargado: " . $capa['nombre'];
+            $stats['debug'][] = "✅ Descargado: " . $capa['nombre'] . " (" . count($geojson['features']) . " features)";
             
             foreach ($geojson['features'] as $feature) {
                 $gtype = $feature['geometry']['type'] ?? '';
