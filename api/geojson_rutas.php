@@ -1,4 +1,10 @@
 <?php
+/**
+ * geojson_rutas.php - GeoJSON de rutas de transporte
+ * 
+ * Usa Worker de Cloudflare para obtener datos frescos de uMap
+ * y combina con datos de MySQL
+ */
 require_once __DIR__ . '/../config/database.php';
 
 header('Content-Type: application/geo+json; charset=utf-8');
@@ -8,6 +14,41 @@ header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-W
 header('Cache-Control: no-cache, must-revalidate');
 
 if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') { http_response_code(200); exit(); }
+
+// ============================================================
+// CONFIGURACIÓN DEL WORKER DE CLOUDFLARE
+// ============================================================
+define('UMAP_WORKER_URL', 'https://umap-proxy-turismo.atenciobonillayoselin.workers.dev/?url=');
+define('UMAP_MAP_ID', 1451289);
+
+/**
+ * Obtener una capa GeoJSON via Cloudflare Worker
+ */
+function obtenerCapaUmap($layerUuid) {
+    $targetUrl = "https://umap.openstreetmap.fr/api/0.1/map/" . UMAP_MAP_ID . "/layer/{$layerUuid}/data/";
+    $proxyUrl = UMAP_WORKER_URL . urlencode($targetUrl);
+    
+    $ch = curl_init($proxyUrl);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_USERAGENT => 'TurismoLaPaz-API/1.0',
+        CURLOPT_HTTPHEADER => [
+            'Accept: application/geo+json, application/json',
+            'Accept-Language: es-ES,es;q=0.9',
+        ],
+    ]);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    if ($httpCode === 200 && $response) {
+        return json_decode($response, true);
+    }
+    return null;
+}
 
 $idRuta   = isset($_GET['id_ruta'])   ? (int) $_GET['id_ruta']   : 0;
 $grupo    = isset($_GET['grupo'])     ? trim($_GET['grupo'])     : '';
@@ -76,6 +117,53 @@ try {
     $stmtRutas = $pdo->prepare($sqlRutas);
     $stmtRutas->execute($params);
     $rutas = $stmtRutas->fetchAll(PDO::FETCH_ASSOC);
+
+    // Si no hay rutas en MySQL, intentar obtener de uMap directamente
+    if (empty($rutas)) {
+        $capasUmap = [
+            '8bfdeb7b-421c-4ff6-9643-53c75c3a88bc' => 'Minibus 254 - IDA',
+            '1131cb1a-631f-4d7b-8f33-f46a469366f9' => 'Minibus 254 - VUELTA',
+            '34f4c3be-3ec9-400b-9b82-c3be983df2dd' => 'Minibus 204 - IDA',
+            'ce66785e-ee35-4de4-b5d8-3ab0d57e1e47' => 'Minibus 889 - IDA',
+            'fa904f68-9ee2-4e12-b3a4-8406f357def5' => 'Minibus 889 - VUELTA',
+            '0a5a5bfc-8c95-4fea-8400-3a8438a2b533' => 'Minibus 364 - IDA',
+            '291c212e-44db-4460-b84e-773bcfede107' => 'Minibus 364 - VUELTA',
+        ];
+        
+        $features = [];
+        foreach ($capasUmap as $uuid => $nombre) {
+            $data = obtenerCapaUmap($uuid);
+            if ($data && isset($data['features'])) {
+                foreach ($data['features'] as $feature) {
+                    if ($feature['geometry']['type'] === 'LineString') {
+                        $coords = $feature['geometry']['coordinates'];
+                        if (count($coords) >= 2) {
+                            $features[] = [
+                                'type' => 'Feature',
+                                'geometry' => ['type' => 'LineString', 'coordinates' => $coords],
+                                'properties' => [
+                                    'name' => $nombre,
+                                    'title' => $nombre,
+                                    'fuente' => 'uMap directo',
+                                    'color' => '#E74C3C',
+                                    'stroke' => '#E74C3C',
+                                ]
+                            ];
+                        }
+                    }
+                }
+            }
+        }
+        
+        echo json_encode([
+            'type' => 'FeatureCollection',
+            'name' => 'Rutas desde uMap (directo)',
+            'totalFeatures' => count($features),
+            'metadata' => ['fuente' => 'uMap Worker', 'worker_url' => UMAP_WORKER_URL],
+            'features' => $features,
+        ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+        exit;
+    }
 
     $sqlPuntos = null;
     $stmtPuntos = null;
@@ -165,12 +253,13 @@ try {
         'name'          => 'Rutas de Transporte - La Paz',
         'totalFeatures' => count($features),
         'metadata'      => [
-            'fuente'       => 'MySQL Aiven (coords_geojson=' . ($hasCoordsJson ? 'SI' : 'NO') . ')',
+            'fuente'       => 'MySQL Aiven (coords_geojson=' . ($hasCoordsJson ? 'SI' : 'NO') . ') + uMap Worker',
             'generado'     => date('c'),
             'total'        => count($features),
             'id_ruta'      => $idRuta,
             'grupo_lugar'  => $grupo,
             'tipo'         => $tipoRuta,
+            'worker_url'   => UMAP_WORKER_URL,
         ],
         'features' => $features,
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);

@@ -1,4 +1,10 @@
 <?php
+/**
+ * geojson_lugares.php - GeoJSON de lugares turísticos
+ * 
+ * Usa Worker de Cloudflare para obtener datos frescos de uMap
+ * y combina con datos de MySQL
+ */
 require_once __DIR__ . '/../config/database.php';
 
 header('Content-Type: application/geo+json; charset=utf-8');
@@ -7,6 +13,41 @@ header('Access-Control-Allow-Methods: GET, OPTIONS');
 header('Cache-Control: no-cache, must-revalidate');
 
 if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') { http_response_code(200); exit(); }
+
+// ============================================================
+// CONFIGURACIÓN DEL WORKER DE CLOUDFLARE
+// ============================================================
+define('UMAP_WORKER_URL', 'https://umap-proxy-turismo.atenciobonillayoselin.workers.dev/?url=');
+define('UMAP_MAP_ID', 1451289);
+
+/**
+ * Obtener una capa GeoJSON via Cloudflare Worker
+ */
+function obtenerCapaUmap($layerUuid) {
+    $targetUrl = "https://umap.openstreetmap.fr/api/0.1/map/" . UMAP_MAP_ID . "/layer/{$layerUuid}/data/";
+    $proxyUrl = UMAP_WORKER_URL . urlencode($targetUrl);
+    
+    $ch = curl_init($proxyUrl);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 30,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_USERAGENT => 'TurismoLaPaz-API/1.0',
+        CURLOPT_HTTPHEADER => [
+            'Accept: application/geo+json, application/json',
+            'Accept-Language: es-ES,es;q=0.9',
+        ],
+    ]);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    
+    if ($httpCode === 200 && $response) {
+        return json_decode($response, true);
+    }
+    return null;
+}
 
 $filtroGrupo     = isset($_GET['grupo'])     ? trim($_GET['grupo'])     : '';
 $filtroCategoria = isset($_GET['categoria']) ? trim($_GET['categoria']) : '';
@@ -100,17 +141,50 @@ try {
         ];
     }
 
+    // Si no hay datos en MySQL, intentar obtener de uMap directamente
+    if (empty($features)) {
+        // Intentar obtener las capas de uMap
+        $capasUmap = [
+            '8bfdeb7b-421c-4ff6-9643-53c75c3a88bc',
+            '34f4c3be-3ec9-400b-9b82-c3be983df2dd',
+            'ce66785e-ee35-4de4-b5d8-3ab0d57e1e47',
+            '0a5a5bfc-8c95-4fea-8400-3a8438a2b533',
+        ];
+        
+        foreach ($capasUmap as $uuid) {
+            $data = obtenerCapaUmap($uuid);
+            if ($data && isset($data['features'])) {
+                foreach ($data['features'] as $feature) {
+                    if ($feature['geometry']['type'] === 'Point') {
+                        $coords = $feature['geometry']['coordinates'];
+                        $features[] = [
+                            'type' => 'Feature',
+                            'geometry' => ['type' => 'Point', 'coordinates' => $coords],
+                            'properties' => [
+                                'name' => $feature['properties']['name'] ?? 'Lugar turístico',
+                                'title' => $feature['properties']['name'] ?? 'Lugar turístico',
+                                'description' => $feature['properties']['description'] ?? '',
+                                'fuente' => 'uMap directo'
+                            ]
+                        ];
+                    }
+                }
+            }
+        }
+    }
+
     echo json_encode([
         'type'     => 'FeatureCollection',
         'name'     => 'Lugares Turísticos - La Paz',
         'generator'=> 'turismo-api/' . date('c'),
         'totalFeatures' => count($features),
         'metadata' => [
-            'fuente'           => 'MySQL Aiven - tabla lugar_turistico',
+            'fuente'           => 'MySQL Aiven + uMap Worker',
             'generado'         => date('c'),
             'total'            => count($features),
             'filtro_grupo'     => $filtroGrupo,
             'filtro_categoria' => $filtroCategoria,
+            'worker_url'       => UMAP_WORKER_URL,
         ],
         'features' => $features,
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
@@ -121,4 +195,3 @@ try {
         'type' => 'FeatureCollection', 'error' => $e->getMessage(), 'features' => []
     ], JSON_UNESCAPED_UNICODE);
 }
-?>

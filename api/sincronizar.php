@@ -2,11 +2,11 @@
 /**
  * sincronizar.php - Sincronización DEFINITIVA uMap → MySQL Aiven
  * 
- * 🏗️ ESTRATEGIA 6 NIVELES (anti-bloqueo 403 probada en producción):
+ * 🏗️ ESTRATEGIA 6 NIVELES (anti-bloqueo 403):
  *
- *   NIVEL 1 → Cloudflare Worker Proxy (TU WORKER - MÁS RÁPIDO Y CONFIABLE)
+ *   NIVEL 1 → Cloudflare Worker Proxy (TU WORKER - PRIORIDAD #1)
  *   NIVEL 2 → Worker + Cookie de sesión (si el mapa es privado)
- *   NIVEL 3 → Descarga DIRECTA a uMap (varias URL + headers)
+ *   NIVEL 3 → Descarga DIRECTA a uMap (fallback)
  *   NIVEL 4 → Caché LOCAL (data/umap_cache/*.json)
  *   NIVEL 5 → Caché REMOTA GitHub Raw
  *   NIVEL 6 → Trigger GitHub Action Refresh + Wait
@@ -27,7 +27,7 @@
  *     🔝 GITHUB_RAW_BASE  = https://raw.githubusercontent.com/TU_USER/TU_REPO/main
  *
  * @package TurismoLaPaz
- * @version 4.0-worker-optimizado
+ * @version 5.0-worker-prioritario
  */
 
 error_reporting(E_ALL);
@@ -432,7 +432,7 @@ function triggerGhaAndWait(array &$stats, array $capasPendientes): bool {
     $payload = json_encode([
         'event_type' => 'refresh-umap-cache',
         'client_payload' => [
-            'triggered_by' => 'render-sync-v4',
+            'triggered_by' => 'render-sync-v5',
             'triggered_at' => date('c'),
             'capas_pendientes' => array_column($capasPendientes, 'id'),
         ],
@@ -443,7 +443,7 @@ function triggerGhaAndWait(array &$stats, array $capasPendientes): bool {
         'X-GitHub-Api-Version: 2022-11-28',
         'Content-Type: application/json',
         'Content-Length: ' . strlen($payload),
-    ], 30, 'Render-Sync-Client/4.0');
+    ], 30, 'Render-Sync-Client/5.0');
     if ($r === null) {
         $stats['debug'][] = "  ↳ ❌ L6: no se pudo contactar GitHub API";
         return false;
@@ -544,7 +544,7 @@ function extraer_grupo_parentesis(string $nombre): array {
 // EJECUCIÓN PRINCIPAL
 // =========================================================================
 try {
-    $stats['debug'][] = "🚀 Iniciando sincronización v4.0-worker → uMap#" . UMAP_MAP_ID . " → BD";
+    $stats['debug'][] = "🚀 Iniciando sincronización v5.0-worker → uMap#" . UMAP_MAP_ID . " → BD";
     $stats['debug'][] = "🧱 Estrategia: L1 Worker → L2 Worker+Cookie → L3 Directo → L4 CacheLocal → L5 GHRaw → L6 GHA-Trigger";
     $stats['total_capas'] = count($capas);
     $metodoGlobal = [];
@@ -795,7 +795,7 @@ try {
         'success' => ($status !== 'ERROR'),
         'status'  => $status,
         'map_id'  => UMAP_MAP_ID,
-        'version' => '4.0-worker-optimizado',
+        'version' => '5.0-worker-prioritario',
         'metodo_descarga_principal' => $metodoPrincipal,
         'worker_used' => strpos($metodoPrincipal, 'L1-worker') !== false,
         'worker_url' => UMAP_PROXY_WORKER,
