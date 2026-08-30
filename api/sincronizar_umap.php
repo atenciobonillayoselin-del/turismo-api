@@ -1,6 +1,7 @@
 <?php
 /**
- * sincronizar_de_umap_a_mysql.php - VERSIÓN CON TODAS LAS CAPAS
+ * sincronizar_umap.php - VERSIÓN AUTOCONTENIDA
+ * Sincroniza uMap con MySQL usando la URL correcta
  */
 
 header('Content-Type: application/json');
@@ -41,20 +42,13 @@ try {
 const UMAP_ID = '1447967';
 const UMAP_BASE = 'https://umap.openstreetmap.fr/en/datalayer/';
 
-// 🟢 LISTA COMPLETA DE CAPAS
+// 🟢 LISTA DE CAPAS A SINCRONIZAR
 const DATALAYER_IDS = [
-    // Mirador Montículo
     '8bfdeb7b-421c-4ff6-9643-53c75c3a88bc', // Minibus 254 - IDA (Mirador Montículo)
     '1131cb1a-631f-4d7b-8f33-f46a469366f9', // Minibus 254 - VUELTA (Mirador Montículo)
-    
-    // Mirador Killi Killi
     '34f4c3be-3ec9-400b-9b82-c3be983df2dd', // Minibus 204 - IDA (MIRADOR KILLI KILLI)
-    
-    // Plaza Villarroel
     'ce66785e-ee35-4de4-b5d8-3ab0d57e1e47', // Minibus 889 - IDA (PLAZA VILLAROEL)
     'fa904f68-9ee2-4e12-b3a4-8406f357def5', // Minibus 889 - VUELTA (PLAZA VILLAROEL)
-    
-    // Parque Laikakota
     '0a5a5bfc-8c95-4fea-8400-3a8438a2b533', // Minibus 364 - IDA (PARQUE LAICACOTA)
     '291c212e-44db-4460-b84e-773bcfede107', // Minibus 364 - VUELTA (PARQUE LAICACOTA)
 ];
@@ -98,13 +92,6 @@ function descargarGeoJSON($datalayerId) {
     return json_decode($response, true);
 }
 
-function detectar_sentido($nombre) {
-    $n = mb_strtolower($nombre, 'UTF-8');
-    if (str_contains($n, 'ida') && !str_contains($n, 'vuelta')) return 'IDA';
-    if (str_contains($n, 'vuelta') && !str_contains($n, 'ida')) return 'VUELTA';
-    return 'NORMAL';
-}
-
 // =========================================================================
 // EJECUCIÓN
 // =========================================================================
@@ -140,114 +127,34 @@ try {
                 if (count($coords) < 2) continue;
                 
                 $nombre = $props['name'] ?? $nombreCapa;
-                $sentido = detectar_sentido($nombre);
-                $color = ($sentido === 'VUELTA') ? '#2980B9' : '#E74C3C';
+                $color = stripos($nombre, 'vuelta') !== false ? '#2980B9' : '#E74C3C';
                 
-                // Extraer nombre del grupo (entre paréntesis)
-                preg_match('/\(([^)]+)\)/', $nombre, $matches);
-                $grupo = $matches[1] ?? $nombre;
-                
-                // Verificar si la ruta ya existe
-                $check = $pdo->prepare("SELECT id_ruta FROM ruta WHERE id_umap = ?");
-                $check->execute([$datalayerId]);
-                $existente = $check->fetch();
-                
-                if ($existente) {
-                    $idRuta = $existente['id_ruta'];
-                    // Actualizar
-                    $sql = "UPDATE ruta SET nombre = :nombre, color_hex = :color, id_grupo_umap = :grupo WHERE id_ruta = :id";
-                    $stmt = $pdo->prepare($sql);
-                    $stmt->execute([
-                        ':nombre' => $nombre,
-                        ':color' => $color,
-                        ':grupo' => $grupo,
-                        ':id' => $idRuta
-                    ]);
-                } else {
-                    // Insertar nueva ruta
-                    $sql = "INSERT INTO ruta (nombre, color_hex, id_umap, id_grupo_umap, activo)
-                            VALUES (:nombre, :color, :id_umap, :grupo, 1)";
-                    $stmt = $pdo->prepare($sql);
-                    $stmt->execute([
-                        ':nombre' => $nombre,
-                        ':color' => $color,
-                        ':id_umap' => $datalayerId,
-                        ':grupo' => $grupo
-                    ]);
-                    $idRuta = $pdo->lastInsertId();
-                }
+                $sql = "INSERT INTO ruta (nombre, color_hex, id_umap, activo)
+                        VALUES (:nombre, :color, :id_umap, 1)";
+                $stmt = $pdo->prepare($sql);
+                $stmt->execute([
+                    ':nombre' => $nombre,
+                    ':color' => $color,
+                    ':id_umap' => $datalayerId
+                ]);
+                $idRuta = $pdo->lastInsertId();
                 $stats['rutas']++;
                 
-                // Guardar paradas
-                $orden = 1;
-                foreach ($coords as $coord) {
-                    $lat = (float)$coord[1];
-                    $lng = (float)$coord[0];
-                    
-                    // Buscar parada existente
-                    $check = $pdo->prepare("SELECT id_parada FROM parada 
-                                            WHERE ABS(latitud - :lat) < 0.00001 
-                                            AND ABS(longitud - :lng) < 0.00001");
-                    $check->execute([':lat' => $lat, ':lng' => $lng]);
-                    $existente = $check->fetch();
-                    
-                    if ($existente) {
-                        $idParada = $existente['id_parada'];
-                    } else {
-                        $sql = "INSERT INTO parada (nombre, latitud, longitud, activo)
-                                VALUES (:nombre, :lat, :lng, 1)";
-                        $stmt = $pdo->prepare($sql);
-                        $stmt->execute([
-                            ':nombre' => 'Parada ' . $orden . ' de ' . $nombre,
-                            ':lat' => $lat,
-                            ':lng' => $lng
-                        ]);
-                        $idParada = $pdo->lastInsertId();
-                        $stats['paradas']++;
-                    }
-                    
-                    // Relacionar ruta con parada
-                    $sql = "INSERT IGNORE INTO ruta_parada (id_ruta, id_parada, orden, es_inicio, es_fin)
-                            VALUES (:id_ruta, :id_parada, :orden, :inicio, :fin)";
-                    $stmt = $pdo->prepare($sql);
-                    $stmt->execute([
-                        ':id_ruta' => $idRuta,
-                        ':id_parada' => $idParada,
-                        ':orden' => $orden,
-                        ':inicio' => ($orden == 1) ? 1 : 0,
-                        ':fin' => ($orden == count($coords)) ? 1 : 0
-                    ]);
-                    $orden++;
-                }
-                
             } elseif ($type === 'Point') {
-                // LUGAR TURÍSTICO
+                // LUGAR
                 $coord = $geom['coordinates'] ?? [];
                 if (count($coord) < 2) continue;
                 
                 $nombre = $props['name'] ?? 'Lugar sin nombre';
-                $categoria = $props['categoria'] ?? 'Atracción turística';
-                
-                // Extraer nombre del grupo (entre paréntesis) o usar el nombre de la capa
-                preg_match('/\(([^)]+)\)/', $nombreCapa, $matches);
-                $grupo = $matches[1] ?? $nombre;
                 
                 $sql = "INSERT INTO lugar_turistico 
-                        (nombre, descripcion, latitud, longitud, categoria, grupo_umap, id_umap, activo)
-                        VALUES (:nombre, :descripcion, :lat, :lng, :categoria, :grupo, :id_umap, 1)
-                        ON DUPLICATE KEY UPDATE
-                        nombre = VALUES(nombre),
-                        descripcion = VALUES(descripcion),
-                        categoria = VALUES(categoria),
-                        grupo_umap = VALUES(grupo_umap)";
+                        (nombre, latitud, longitud, id_umap, activo)
+                        VALUES (:nombre, :lat, :lng, :id_umap, 1)";
                 $stmt = $pdo->prepare($sql);
                 $stmt->execute([
                     ':nombre' => $nombre,
-                    ':descripcion' => $props['description'] ?? '',
                     ':lat' => (float)$coord[1],
                     ':lng' => (float)$coord[0],
-                    ':categoria' => $categoria,
-                    ':grupo' => $grupo,
                     ':id_umap' => $datalayerId
                 ]);
                 $stats['lugares']++;

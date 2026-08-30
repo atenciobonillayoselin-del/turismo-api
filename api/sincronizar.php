@@ -1,6 +1,7 @@
 <?php
 /**
- * sincronizar.php - VERSIÓN CON URL CORREGIDA
+ * sincronizar.php - VERSIÓN CON PROXY
+ * Usa CORS-Anywhere para evitar el bloqueo 403
  */
 
 error_reporting(E_ALL);
@@ -67,35 +68,81 @@ $capas = [
 ];
 
 // =========================================================================
-// FUNCIONES
+// FUNCIÓN DE DESCARGA CON PROXY
 // =========================================================================
 
-function descargar_url(string $url): string {
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_TIMEOUT => 30,
-        CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        CURLOPT_HTTPHEADER => [
-            'Accept: application/geo+json, application/json',
-            'Accept-Language: es-ES,es;q=0.9',
-            'Referer: https://umap.openstreetmap.fr/',
-            'Origin: https://umap.openstreetmap.fr',
-            'Cache-Control: no-cache',
-        ],
-        CURLOPT_ENCODING => '',
-        CURLOPT_VERBOSE => false,
-    ]);
-    $resp = curl_exec($ch);
-    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $err = curl_error($ch);
-    curl_close($ch);
-    if ($resp === false || $code < 200 || $code >= 400) {
-        throw new Exception("HTTP $code - $err");
+function descargar_con_proxy(string $url): string {
+    // 1. Intentar con CORS-Anywhere
+    $proxyUrls = [
+        'https://cors-anywhere.herokuapp.com/' . $url,
+        'https://api.allorigins.win/raw?url=' . urlencode($url),
+        'https://proxy.cors.sh/' . $url,
+    ];
+    
+    foreach ($proxyUrls as $proxyUrl) {
+        try {
+            $ch = curl_init($proxyUrl);
+            curl_setopt_array($ch, [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_FOLLOWLOCATION => true,
+                CURLOPT_TIMEOUT => 30,
+                CURLOPT_SSL_VERIFYPEER => false,
+                CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                CURLOPT_HTTPHEADER => [
+                    'Accept: application/geo+json, application/json',
+                    'Accept-Language: es-ES,es;q=0.9',
+                    'Origin: https://umap.openstreetmap.fr',
+                    'Referer: https://umap.openstreetmap.fr/',
+                ],
+                CURLOPT_ENCODING => '',
+                CURLOPT_VERBOSE => false,
+            ]);
+            $resp = curl_exec($ch);
+            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            $err = curl_error($ch);
+            curl_close($ch);
+            
+            // Si el proxy devuelve datos válidos (aunque sea 200 o 403)
+            if ($code === 200 && !empty($resp)) {
+                // Verificar que sea JSON válido
+                json_decode($resp);
+                if (json_last_error() === JSON_ERROR_NONE) {
+                    return $resp;
+                }
+            }
+        } catch (Exception $e) {
+            continue;
+        }
     }
-    return $resp;
+    
+    // 2. Fallback: intentar directo (por si acaso)
+    try {
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_TIMEOUT => 30,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            CURLOPT_HTTPHEADER => [
+                'Accept: application/geo+json, application/json',
+                'Accept-Language: es-ES,es;q=0.9',
+                'Referer: https://umap.openstreetmap.fr/',
+                'Origin: https://umap.openstreetmap.fr',
+            ],
+        ]);
+        $resp = curl_exec($ch);
+        $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        if ($code === 200 && !empty($resp)) {
+            json_decode($resp);
+            if (json_last_error() === JSON_ERROR_NONE) {
+                return $resp;
+            }
+        }
+    } catch (Exception $e) {}
+    
+    throw new Exception("Todos los métodos de descarga fallaron");
 }
 
 function detectar_sentido(string $nombre): string {
@@ -127,12 +174,11 @@ try {
     $stats['debug'][] = "🧹 Tablas limpiadas";
     
     foreach ($capas as $capa) {
-        // ⭐ URL CORREGIDA: incluye map_id
         $url = "https://umap.openstreetmap.fr/es/datalayer/" . UMAP_MAP_ID . "/{$capa['id']}/?format=geojson";
-        $stats['debug'][] = "📥 Descargando: " . $capa['nombre'] . " (URL: $url)";
+        $stats['debug'][] = "📥 Descargando: " . $capa['nombre'];
         
         try {
-            $data = descargar_url($url);
+            $data = descargar_con_proxy($url);
             $geojson = json_decode($data, true);
             
             if (empty($geojson['features'])) {
