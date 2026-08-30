@@ -27,7 +27,8 @@ $ok = 0;
 $fail = 0;
 
 foreach ($capas as $cid => $nombre) {
-    $url = "https://umap.openstreetmap.fr/api/0.1/map/$MAP_ID/layer/$cid/data/";
+    // CAMBIO CLAVE AQUÍ: Usar /es/datalayer/{MAP_ID}/{LAYER_UUID}/
+    $url = "https://umap.openstreetmap.fr/es/datalayer/$MAP_ID/$cid/";
     $proxyUrl = $WORKER . urlencode($url);
     
     $ch = curl_init($proxyUrl);
