@@ -1,9 +1,7 @@
 <?php
 /**
  * sincronizar.php - VERSIÓN CON DETECCIÓN AUTOMÁTICA DE CAPAS
- * ------------------------------------------------------------
- * Descubre automáticamente todas las capas del mapa
- * SIN necesidad de actualizar el script manualmente
+ * Usa el enlace corto de uMap para descubrir capas
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_WARNING);
@@ -91,18 +89,19 @@ function descargar_url(string $url): string {
 
 /**
  * OBTIENE LA LISTA DE CAPAS AUTOMÁTICAMENTE
+ * Usa el enlace corto de uMap para mayor confiabilidad
  */
 function obtener_capas_desde_umap(int $mapId): array {
     $capas = [];
     
-    // Intentar obtener desde la API de metadatos (con User-Agent de navegador)
-    $url = "https://umap.openstreetmap.fr/es/map/{$mapId}/geojson/";
+    // USAR EL ENLACE CORTO (más confiable)
+    $url = "http://u.osmfr.org/m/{$mapId}/geojson/";
     
     try {
         $data = descargar_url($url);
         $json = json_decode($data, true);
         
-        // Buscar datalayers en la estructura
+        // Buscar datalayers en la respuesta
         if (!empty($json['datalayers'])) {
             foreach ($json['datalayers'] as $grupo) {
                 $nombreGrupo = $grupo['properties']['name'] ?? 'Sin nombre';
@@ -115,45 +114,32 @@ function obtener_capas_desde_umap(int $mapId): array {
                             'id' => $capa['id'],
                             'nombre' => $capa['properties']['name'] ?? 'Sin nombre',
                             'grupo' => $nombreGrupo,
-                            'tipo' => 'capa' // línea o punto
+                            'tipo' => 'capa'
                         ];
                     }
                 }
                 
-                // Si el grupo en sí es una capa (tiene geojson)
+                // Si el grupo en sí tiene geojson (caso de puntos)
                 if (!empty($grupo['geojson'])) {
-                    // Verificar si es un punto o línea
-                    $geojson = $grupo['geojson'];
-                    if (!empty($geojson['features'])) {
-                        foreach ($geojson['features'] as $feature) {
-                            $gtype = $feature['geometry']['type'] ?? '';
-                            if ($gtype === 'Point' || $gtype === 'LineString') {
-                                $capas[] = [
-                                    'id' => $grupoId,
-                                    'nombre' => $nombreGrupo,
-                                    'grupo' => $nombreGrupo,
-                                    'tipo' => $gtype === 'Point' ? 'punto' : 'capa'
-                                ];
-                                break;
-                            }
-                        }
-                    }
+                    $capas[] = [
+                        'id' => $grupoId,
+                        'nombre' => $nombreGrupo,
+                        'grupo' => $nombreGrupo,
+                        'tipo' => 'punto'
+                    ];
                 }
             }
         }
         
-        // Si no encontramos datalayers, buscar en otras propiedades
-        if (empty($capas)) {
-            // Buscar en properties.datalayers
-            if (!empty($json['properties']['datalayers'])) {
-                foreach ($json['properties']['datalayers'] as $grupo) {
-                    // ... procesamiento similar
-                }
+        // Si no encontramos datalayers, buscar en properties
+        if (empty($capas) && !empty($json['properties']['datalayers'])) {
+            foreach ($json['properties']['datalayers'] as $grupo) {
+                // Procesamiento similar...
             }
         }
         
     } catch (Exception $e) {
-        // Si falla, usar la lista estática como fallback
+        // Si falla, usar lista de fallback
         $capas = obtener_capas_fallback();
     }
     
