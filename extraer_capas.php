@@ -2,6 +2,10 @@
 /**
  * Extrae las capas individuales del GeoJSON completo
  * de uMap y las guarda en data/umap_cache/
+ * 
+ * Busca archivos .geojson en:
+ * - Raíz del proyecto (*.geojson)
+ * - Carpeta geojson/ (geojson/*.geojson)
  */
 
 // IDs de las capas (según el orden en el archivo)
@@ -36,12 +40,40 @@ $capas = [
     ]
 ];
 
-// Leer el archivo GeoJSON completo
-$archivo = 'rutaslapaz (4).geojson';
-if (!file_exists($archivo)) {
-    die("❌ No se encuentra el archivo: $archivo\n");
+// ============================================================
+// 🔍 BUSCAR ARCHIVOS GEOJSON EN RAÍZ Y EN CARPETA geojson/
+// ============================================================
+$archivos = array_merge(
+    glob('*.geojson'),
+    glob('geojson/*.geojson'),
+    glob('geojson/*.json')  // Por si acaso
+);
+
+if (empty($archivos)) {
+    die("❌ No se encontraron archivos .geojson en la raíz o en la carpeta geojson/\n");
 }
 
+echo "📂 Archivos GeoJSON encontrados:\n";
+foreach ($archivos as $i => $f) {
+    $size = round(filesize($f) / 1024, 1);
+    echo "  [$i] $f (" . $size . " KB)\n";
+}
+
+echo "\nEscribe el número del archivo a procesar (0-" . (count($archivos)-1) . "): ";
+$handle = fopen("php://stdin", "r");
+$line = fgets($handle);
+$index = intval(trim($line));
+
+if (!isset($archivos[$index])) {
+    die("❌ Archivo no válido\n");
+}
+
+$archivo = $archivos[$index];
+echo "\n📄 Procesando archivo: $archivo\n";
+
+// ============================================================
+// 📥 LEER EL ARCHIVO
+// ============================================================
 $json = file_get_contents($archivo);
 $data = json_decode($json, true);
 
@@ -57,7 +89,9 @@ if (!is_dir($cacheDir)) {
 
 echo "📊 Total de features en el archivo: " . count($data['features']) . "\n\n";
 
-// Contar cuántos features tiene cada capa (por geometría)
+// ============================================================
+// 📊 EXTRAER CAPAS
+// ============================================================
 $featureCount = 0;
 $capasEncontradas = [];
 
@@ -80,8 +114,12 @@ foreach ($data['features'] as $feature) {
     }
 }
 
-// Guardar cada capa como archivo independiente
+// ============================================================
+// 💾 GUARDAR CADA CAPA
+// ============================================================
 echo "📁 Guardando capas:\n";
+$guardadas = 0;
+
 foreach ($capas as $capa) {
     $id = $capa['id'];
     $nombre = $capa['nombre'];
@@ -103,6 +141,26 @@ foreach ($capas as $capa) {
     file_put_contents($outputFile, json_encode($capaJson, JSON_PRETTY_PRINT));
     
     echo "  ✅ $nombre ($id): " . count($features) . " features guardados\n";
+    $guardadas++;
 }
 
-echo "\n✅ Todas las capas guardadas en: " . realpath($cacheDir) . "\n";
+echo "\n✅ $guardadas capas guardadas en: " . realpath($cacheDir) . "\n";
+
+// ============================================================
+// 🔍 VERIFICAR ARCHIVOS GUARDADOS
+// ============================================================
+echo "\n🔍 Verificando archivos guardados:\n";
+$archivosGuardados = glob($cacheDir . '*.json');
+foreach ($archivosGuardados as $f) {
+    $nombre = basename($f);
+    // Saltar .gitkeep y README.md
+    if ($nombre === '.gitkeep' || $nombre === 'README.md') continue;
+    
+    $contenido = file_get_contents($f);
+    $test = json_decode($contenido, true);
+    if ($test && isset($test['features'])) {
+        echo "  ✅ " . $nombre . " - " . count($test['features']) . " features\n";
+    } else {
+        echo "  ❌ " . $nombre . " - INVÁLIDO\n";
+    }
+}
