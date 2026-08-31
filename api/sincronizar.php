@@ -3,7 +3,7 @@
  * sincronizar.php - Sincronización 100% AUTOMÁTICA de uMap → MySQL Aiven
  * 
  * @package TurismoLaPaz
- * @version 13.0-dynamic-debug
+ * @version 14.0-worker-json-fix
  */
 
 error_reporting(E_ALL);
@@ -166,7 +166,6 @@ function migrarEsquema(PDO $pdo, array &$stats): void {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_spanish_ci");
             $mig[] = "CREATE sincronizacion_log";
         } else {
-            // Agregar columnas faltantes
             foreach (['metodo_descarga', 'metodo_deteccion'] as $col) {
                 try {
                     $check = $pdo->query("SHOW COLUMNS FROM sincronizacion_log LIKE '$col'");
@@ -237,16 +236,12 @@ migrarEsquema($pdo, $stats);
 function buildUrlVariants(string $capaId): array {
     $mid = UMAP_MAP_ID;
     return [
-        // API oficial v0.1
         "https://umap.openstreetmap.fr/api/0.1/map/$mid/layer/$capaId/data/",
         "https://umap.openstreetmap.fr/api/0.1/map/$mid/layer/$capaId/data?format=geojson",
-        // Endpoint datalayer
         "https://umap.openstreetmap.fr/es/datalayer/$mid/$capaId/?format=geojson",
         "https://umap.openstreetmap.fr/en/datalayer/$mid/$capaId/?format=geojson",
-        // URL corta con data param
         "https://umap.openstreetmap.fr/es/map/_/$mid?data=$capaId&format=geojson",
         "https://umap.openstreetmap.fr/en/map/_/$mid?data=$capaId&format=geojson",
-        // Mirrors
         "https://u.osmfr.org/m/$mid/datalayer/$capaId/?format=geojson",
         "https://umap.openstreetmap.de/de/datalayer/$mid/$capaId/?format=geojson",
     ];
@@ -327,6 +322,47 @@ function isGeoJsonValid(?array $data): bool {
 }
 
 // ============================================================
+// FUNCIÓN GENÉRICA PARA DESCARGAR CON WORKER (CORREGIDA)
+// ============================================================
+function pedirProxy(string $targetUrl, array &$stats, int $timeout = 30): ?array {
+    $proxyUrl = UMAP_PROXY_WORKER . urlencode($targetUrl);
+    
+    $ch = curl_init($proxyUrl);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => $timeout,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/14.0',
+        CURLOPT_HTTPHEADER => [
+            'Accept: application/geo+json, application/json, text/html, */*;q=0.8',
+            'Accept-Language: es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7',
+        ],
+    ]);
+    
+    $resp = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $ct = curl_getinfo($ch, CURLINFO_CONTENT_TYPE) ?: '';
+    $size = (int)curl_getinfo($ch, CURLINFO_SIZE_DOWNLOAD);
+    curl_close($ch);
+    
+    $stats['debug'][] = "  ↳ Worker: HTTP $code, " . round($size/1024, 1) . "KB, Content-Type: $ct";
+    
+    // ✅ CORRECCIÓN: Verificar que la respuesta sea JSON válido
+    if ($code === 200 && $resp && strlen($resp) > 100) {
+        // Intentar decodificar JSON
+        $decoded = json_decode($resp, true);
+        if ($decoded !== null && is_array($decoded)) {
+            return $decoded;
+        }
+        // Si no es JSON, devolver null para que se use el siguiente método
+        $stats['debug'][] = "  ↳ ⚠️ La respuesta no es JSON válido, usando siguiente método";
+        return null;
+    }
+    
+    return null;
+}
+
+// ============================================================
 // FUNCIÓN HTTP GET SIMPLE
 // ============================================================
 function httpGet(string $url, int $timeout = 15): ?string {
@@ -338,7 +374,7 @@ function httpGet(string $url, int $timeout = 15): ?string {
         CURLOPT_FOLLOWLOCATION => true,
         CURLOPT_MAXREDIRS => 3,
         CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/13.0',
+        CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/14.0',
         CURLOPT_HTTPHEADER => [
             'Accept: application/json, text/html, */*',
             'Accept-Language: es-ES,es;q=0.9',
@@ -355,39 +391,7 @@ function httpGet(string $url, int $timeout = 15): ?string {
 }
 
 // ============================================================
-// FUNCIÓN GENÉRICA PARA DESCARGAR CON WORKER
-// ============================================================
-function pedirProxy(string $targetUrl, array &$stats, int $timeout = 30): ?array {
-    $proxyUrl = UMAP_PROXY_WORKER . urlencode($targetUrl);
-    
-    $ch = curl_init($proxyUrl);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => $timeout,
-        CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/13.0',
-        CURLOPT_HTTPHEADER => [
-            'Accept: application/geo+json, application/json, text/html, */*;q=0.8',
-            'Accept-Language: es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7',
-        ],
-    ]);
-    
-    $resp = curl_exec($ch);
-    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $ct = curl_getinfo($ch, CURLINFO_CONTENT_TYPE) ?: '';
-    $size = (int)curl_getinfo($ch, CURLINFO_SIZE_DOWNLOAD);
-    curl_close($ch);
-    
-    $stats['debug'][] = "  ↳ Worker: HTTP $code, " . round($size/1024, 1) . "KB, Content-Type: $ct";
-    
-    if ($code === 200 && $resp) {
-        return json_decode($resp, true);
-    }
-    return null;
-}
-
-// ============================================================
-// 🚀 DETECCIÓN DINÁMICA DE CAPAS CON DEBUG ESTRUCTURAL
+// 🚀 DETECCIÓN DINÁMICA DE CAPAS (CORREGIDA)
 // ============================================================
 function detectarCapasAutomaticamente(array &$stats): array {
     global $FALLBACK_UUIDS;
@@ -459,12 +463,7 @@ function detectarCapasAutomaticamente(array &$stats): array {
             }
         }
         
-        // Estructura 4: GeoJSON properties con datalayers
-        if (empty($capasEncontradas) && isset($content['properties']['datalayers'])) {
-            // Ya lo intentamos, pero repetimos por si el path es diferente
-        }
-        
-        // Estructura 5: Buscar en cualquier lugar donde haya un array con uuid/name
+        // Estructura 4: Buscar recursivamente
         if (empty($capasEncontradas)) {
             $stats['debug'][] = "  📦 Buscando recursivamente en toda la estructura...";
             $recursiveResult = buscarCapasRecursivamente($content);
@@ -485,11 +484,13 @@ function detectarCapasAutomaticamente(array &$stats): array {
             $stats['capas_detectadas'] = $capasEncontradas;
             $stats['json_debug'] = $debugEstructural;
             return $capasEncontradas;
+        } else {
+            $stats['debug'][] = "  📦 No se encontraron capas en la estructura JSON";
         }
     } else {
         $debugEstructural['M1']['status'] = 'failed';
         if ($content === null) {
-            $debugEstructural['M1']['reason'] = 'No response (null)';
+            $debugEstructural['M1']['reason'] = 'No response (null) - posiblemente HTML en lugar de JSON';
         } elseif (!is_array($content)) {
             $debugEstructural['M1']['reason'] = 'Not an array';
             $debugEstructural['M1']['type'] = gettype($content);
@@ -584,13 +585,11 @@ function buscarCapasRecursivamente(array $data, string $path = 'root'): array {
     // Buscar en listas de objetos
     foreach ($data as $key => $value) {
         if (is_array($value)) {
-            // Si es una lista numerada, podría ser un array de capas
             if (is_numeric($key) && isset($value['uuid']) && isset($value['name'])) {
                 $result[$value['uuid']] = $value['name'];
             } elseif (is_numeric($key) && isset($value['id']) && isset($value['name'])) {
                 $result[$value['id']] = $value['name'];
             } else {
-                // Buscar recursivamente
                 $sub = buscarCapasRecursivamente($value, $path . '.' . $key);
                 $result = array_merge($result, $sub);
             }
@@ -601,18 +600,20 @@ function buscarCapasRecursivamente(array $data, string $path = 'root'): array {
 }
 
 // ============================================================
-// FUNCIÓN PARA DESCARGAR CAPA CON MULTI-NIVEL
+// FUNCIÓN PARA DESCARGAR CAPA CON MULTI-NIVEL (CORREGIDA)
 // ============================================================
 function descargarCapaMultiNivel(string $capaId, array &$stats): ?array {
     $stats['debug'][] = "  📥 Descargando capa: $capaId";
     
     // ============================================================
-    // NIVEL 1: Worker de Cloudflare
+    // NIVEL 1: Worker de Cloudflare - Múltiples URLs
     // ============================================================
     $urlsParaProbar = [
         "https://umap.openstreetmap.fr/api/0.1/map/" . UMAP_MAP_ID . "/layer/$capaId/data/",
         "https://umap.openstreetmap.fr/es/datalayer/" . UMAP_MAP_ID . "/$capaId/?format=geojson",
+        "https://umap.openstreetmap.fr/en/datalayer/" . UMAP_MAP_ID . "/$capaId/?format=geojson",
         "https://umap.openstreetmap.fr/es/map/_/" . UMAP_MAP_ID . "?data=$capaId&format=geojson",
+        "https://umap.openstreetmap.fr/en/map/_/" . UMAP_MAP_ID . "?data=$capaId&format=geojson",
     ];
     
     foreach ($urlsParaProbar as $targetUrl) {
@@ -625,7 +626,7 @@ function descargarCapaMultiNivel(string $capaId, array &$stats): ?array {
     }
     
     // ============================================================
-    // NIVEL 2: Worker + Cookie
+    // NIVEL 2: Worker + Cookie (si está configurada)
     // ============================================================
     if (!empty(UMAP_TOKEN)) {
         foreach ($urlsParaProbar as $targetUrl) {
@@ -635,7 +636,7 @@ function descargarCapaMultiNivel(string $capaId, array &$stats): ?array {
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_TIMEOUT => 30,
                 CURLOPT_SSL_VERIFYPEER => false,
-                CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/13.0',
+                CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/14.0',
                 CURLOPT_HTTPHEADER => [
                     'X-Proxy-Forward-Cookie: ' . UMAP_TOKEN,
                     'Accept: application/geo+json, application/json',
@@ -1042,7 +1043,7 @@ function ejecutarTransaccionSegura(PDO $pdo, array &$stats, array $capasConDatos
 // EJECUCIÓN PRINCIPAL
 // =========================================================================
 try {
-    $stats['debug'][] = "🚀 Iniciando sincronización v13.0-dynamic-debug → uMap#" . UMAP_MAP_ID;
+    $stats['debug'][] = "🚀 Iniciando sincronización v14.0-worker-json-fix → uMap#" . UMAP_MAP_ID;
     
     // ============================================================
     // PASO 1: DETECTAR CAPAS DINÁMICAMENTE
@@ -1154,7 +1155,7 @@ try {
         'success' => ($status !== 'ERROR'),
         'status'  => $status,
         'map_id'  => UMAP_MAP_ID,
-        'version' => '13.0-dynamic-debug',
+        'version' => '14.0-worker-json-fix',
         'metodo_deteccion' => $stats['metodo_deteccion'] ?? 'desconocido',
         'metodo_descarga_principal' => $metodoPrincipal,
         'worker_used' => strpos($metodoPrincipal, 'L1-worker') !== false,
@@ -1220,7 +1221,7 @@ try {
         'stats'   => $stats,
         'debug'   => $stats['debug'],
         'setup_hint' => [
-            'Paso 1' => 'Verifica que tu Worker de Cloudflare esté desplegado',
+            'Paso 1' => 'Actualiza el Worker de Cloudflare con el código nuevo',
             'Paso 2' => 'Prueba: ' . UMAP_PROXY_WORKER . 'https://umap.openstreetmap.fr/es/map/rutaslapaz_1451289?format=json',
         ],
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
