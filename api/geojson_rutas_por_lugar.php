@@ -1,4 +1,5 @@
 <?php
+// api/geojson_rutas_por_lugar.php
 require_once __DIR__ . '/../config/database.php';
 
 header('Content-Type: application/geo+json; charset=utf-8');
@@ -41,7 +42,9 @@ try {
                     r.nombre,
                     r.descripcion,
                     r.tipo,
-                    r.color_hex
+                    r.color_hex,
+                    r.sentido,
+                    r.coords_geojson
                 FROM ruta r
                 {$joinLugar}
                 WHERE " . implode(" AND ", $where) . "
@@ -60,15 +63,31 @@ try {
     $features = [];
     foreach ($rutas as $ruta) {
         $idR = (int) $ruta['id_ruta'];
-        $stmtPuntos->execute([':id_ruta' => $idR]);
-        $puntos = $stmtPuntos->fetchAll(PDO::FETCH_ASSOC);
-
         $coords = [];
-        foreach ($puntos as $pt) {
-            $lat = (float)$pt['latitud'];
-            $lng = (float)$pt['longitud'];
-            if ($lat !== 0.0 && $lng !== 0.0) $coords[] = [$lng, $lat];
+        
+        // ✅ Intentar obtener coordenadas de coords_geojson si existe
+        if (!empty($ruta['coords_geojson'])) {
+            $parsed = json_decode($ruta['coords_geojson'], true);
+            if (is_array($parsed) && count($parsed) >= 2) {
+                foreach ($parsed as $c) {
+                    $lat = (float)($c[1] ?? 0);
+                    $lng = (float)($c[0] ?? 0);
+                    if ($lat !== 0.0 && $lng !== 0.0) $coords[] = [$lng, $lat];
+                }
+            }
         }
+        
+        // ✅ Si no hay coords_geojson, usar ruta_parada
+        if (count($coords) < 2) {
+            $stmtPuntos->execute([':id_ruta' => $idR]);
+            $puntos = $stmtPuntos->fetchAll(PDO::FETCH_ASSOC);
+            foreach ($puntos as $pt) {
+                $lat = (float)$pt['latitud'];
+                $lng = (float)$pt['longitud'];
+                if ($lat !== 0.0 && $lng !== 0.0) $coords[] = [$lng, $lat];
+            }
+        }
+        
         if (count($coords) < 2) continue;
 
         $color = $ruta['color_hex'];
@@ -88,6 +107,7 @@ try {
                 'description' => "<strong>" . htmlspecialchars($ruta['nombre']) . "</strong><br>{$label} · " . count($coords) . " paradas" . (!empty($ruta['descripcion']) ? "<br><br>" . htmlspecialchars($ruta['descripcion']) : ""),
                 'id_ruta'     => $idR,
                 'tipo'        => $ruta['tipo'] ?? 'minibus',
+                'sentido'     => $ruta['sentido'] ?? 'NORMAL',
                 'color'       => $color,
                 'stroke'      => $color,
                 'stroke-width' => 5,
@@ -111,7 +131,9 @@ try {
 } catch (Exception $e) {
     http_response_code(500);
     echo json_encode([
-        'type'=>'FeatureCollection','error'=>$e->getMessage(),'features'=>[]
+        'type'=>'FeatureCollection',
+        'error'=>$e->getMessage(),
+        'features'=>[]
     ], JSON_UNESCAPED_UNICODE);
 }
 ?>
