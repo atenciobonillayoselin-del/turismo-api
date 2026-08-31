@@ -1,90 +1,62 @@
 <?php
 /**
- * Extrae las capas individuales del GeoJSON completo
- * de uMap y las guarda en data/umap_cache/
+ * Extrae capas individuales de un GeoJSON completo
+ * basado en el tipo de geometría y orden de aparición
  * 
- * Busca archivos .geojson en:
- * - Raíz del proyecto (*.geojson)
- * - Carpeta geojson/ (geojson/*.geojson)
- * - data/umap_cache/geojson/ (data/umap_cache/geojson/*.geojson)
+ * ASUNCION: Cada capa tiene exactamente 2 features:
+ *   - 1 Point (lugar turístico)
+ *   - 1 LineString (ruta)
  */
 
-// IDs de las capas (según el orden en el archivo)
+// IDs de las capas en orden de aparición en el GeoJSON
 $capas = [
     [
         'id' => '8bfdeb7b-421c-4ff6-9643-53c75c3a88bc',
-        'nombre' => 'Minibus 254 IDA'
+        'nombre' => 'Minibus 254 - IDA'
     ],
     [
         'id' => '1131cb1a-631f-4d7b-8f33-f46a469366f9',
-        'nombre' => 'Minibus 254 VUELTA'
+        'nombre' => 'Minibus 254 - VUELTA'
     ],
     [
         'id' => '34f4c3be-3ec9-400b-9b82-c3be983df2dd',
-        'nombre' => 'Minibus 204 IDA'
+        'nombre' => 'Minibus 204 - IDA'
     ],
     [
         'id' => 'ce66785e-ee35-4de4-b5d8-3ab0d57e1e47',
-        'nombre' => 'Minibus 889 IDA'
+        'nombre' => 'Minibus 889 - IDA'
     ],
     [
         'id' => 'fa904f68-9ee2-4e12-b3a4-8406f357def5',
-        'nombre' => 'Minibus 889 VUELTA'
+        'nombre' => 'Minibus 889 - VUELTA'
     ],
     [
         'id' => '0a5a5bfc-8c95-4fea-8400-3a8438a2b533',
-        'nombre' => 'Minibus 364 IDA'
+        'nombre' => 'Minibus 364 - IDA'
     ],
     [
         'id' => '291c212e-44db-4460-b84e-773bcfede107',
-        'nombre' => 'Minibus 364 VUELTA'
+        'nombre' => 'Minibus 364 - VUELTA'
     ]
 ];
 
-// ============================================================
-// 🔍 BUSCAR ARCHIVOS GEOJSON EN TODAS LAS UBICACIONES
-// ============================================================
-$archivos = [];
-
-// Buscar en la raíz
-$archivos = array_merge($archivos, glob('*.geojson'));
-
-// Buscar en la carpeta geojson/
-$archivos = array_merge($archivos, glob('geojson/*.geojson'));
-
-// Buscar en data/umap_cache/geojson/
-$archivos = array_merge($archivos, glob('data/umap_cache/geojson/*.geojson'));
-
-// Buscar archivos .json en geojson/ (por si acaso)
-$archivos = array_merge($archivos, glob('geojson/*.json'));
-$archivos = array_merge($archivos, glob('data/umap_cache/geojson/*.json'));
-
-// Filtrar archivos que no sean .gitkeep o README
-$archivos = array_filter($archivos, function($file) {
-    $basename = basename($file);
-    return !in_array($basename, ['.gitkeep', 'README.md']);
-});
+// Buscar el archivo
+$archivos = array_merge(
+    glob('data/umap_cache/geojson/*.geojson'),
+    glob('*.geojson'),
+    glob('geojson/*.geojson')
+);
 
 if (empty($archivos)) {
-    echo "❌ No se encontraron archivos .geojson\n";
-    echo "📁 Revisa que tengas el archivo en:\n";
-    echo "   - Raíz del proyecto: *.geojson\n";
-    echo "   - Carpeta geojson/: geojson/*.geojson\n";
-    echo "   - data/umap_cache/geojson/: data/umap_cache/geojson/*.geojson\n";
-    echo "\n📂 Contenido de la carpeta geojson/:\n";
-    system('ls -la geojson/ 2>/dev/null || dir geojson\\ 2>nul');
-    echo "\n📂 Contenido de data/umap_cache/geojson/:\n";
-    system('ls -la data/umap_cache/geojson/ 2>/dev/null || dir data\\umap_cache\\geojson\\ 2>nul');
-    exit(1);
+    die("❌ No se encontraron archivos .geojson\n");
 }
 
 echo "📂 Archivos GeoJSON encontrados:\n";
 foreach ($archivos as $i => $f) {
-    $size = round(filesize($f) / 1024, 1);
-    echo "  [$i] $f (" . $size . " KB)\n";
+    echo "  [$i] $f\n";
 }
 
-echo "\nEscribe el número del archivo a procesar (0-" . (count($archivos)-1) . "): ";
+echo "\nEscribe el número del archivo (0-" . (count($archivos)-1) . "): ";
 $handle = fopen("php://stdin", "r");
 $line = fgets($handle);
 $index = intval(trim($line));
@@ -94,98 +66,61 @@ if (!isset($archivos[$index])) {
 }
 
 $archivo = $archivos[$index];
-echo "\n📄 Procesando archivo: $archivo\n";
+echo "\n📄 Procesando: $archivo\n";
 
-// ============================================================
-// 📥 LEER EL ARCHIVO
-// ============================================================
 $json = file_get_contents($archivo);
 $data = json_decode($json, true);
 
 if (!$data || !isset($data['features'])) {
-    die("❌ El archivo no es un GeoJSON válido\n");
+    die("❌ No es un GeoJSON válido\n");
 }
 
-// Crear directorio de caché si no existe
 $cacheDir = __DIR__ . '/data/umap_cache/';
 if (!is_dir($cacheDir)) {
     mkdir($cacheDir, 0777, true);
 }
 
-echo "📊 Total de features en el archivo: " . count($data['features']) . "\n\n";
-
-// ============================================================
-// 📊 EXTRAER CAPAS
-// ============================================================
-$featureCount = 0;
-$capasEncontradas = [];
+// Separar features por tipo (Point vs LineString)
+$points = [];
+$lines = [];
 
 foreach ($data['features'] as $feature) {
-    $featureCount++;
-    
-    // Determinar a qué capa pertenece según su geometría
-    // Usamos el orden de aparición para asignar
-    $capaIndex = floor(($featureCount - 1) / 2); // 2 features por capa (Point + LineString)
-    
-    if ($capaIndex < count($capas)) {
-        $capaId = $capas[$capaIndex]['id'];
-        if (!isset($capasEncontradas[$capaId])) {
-            $capasEncontradas[$capaId] = [
-                'features' => [],
-                'nombre' => $capas[$capaIndex]['nombre']
-            ];
-        }
-        $capasEncontradas[$capaId]['features'][] = $feature;
+    $type = $feature['geometry']['type'] ?? '';
+    if ($type === 'Point') {
+        $points[] = $feature;
+    } elseif ($type === 'LineString') {
+        $lines[] = $feature;
     }
 }
 
-// ============================================================
-// 💾 GUARDAR CADA CAPA
-// ============================================================
-echo "📁 Guardando capas:\n";
-$guardadas = 0;
+echo "📊 Puntos encontrados: " . count($points) . "\n";
+echo "📊 Líneas encontradas: " . count($lines) . "\n";
 
-foreach ($capas as $capa) {
-    $id = $capa['id'];
-    $nombre = $capa['nombre'];
+// Asignar: cada capa tiene 1 Point + 1 LineString
+$totalCapas = min(count($points), count($lines), count($capas));
+
+for ($i = 0; $i < $totalCapas; $i++) {
+    $capa = $capas[$i];
+    $features = [];
     
-    if (!isset($capasEncontradas[$id])) {
-        echo "  ⚠️ $nombre ($id): No se encontraron features\n";
-        continue;
+    if (isset($points[$i])) {
+        $features[] = $points[$i];
+    }
+    if (isset($lines[$i])) {
+        $features[] = $lines[$i];
     }
     
-    $features = $capasEncontradas[$id]['features'];
+    if (empty($features)) continue;
     
-    // Crear FeatureCollection para esta capa
     $capaJson = [
         'type' => 'FeatureCollection',
         'features' => $features
     ];
     
-    $outputFile = $cacheDir . $id . '.json';
+    $outputFile = $cacheDir . $capa['id'] . '.json';
     file_put_contents($outputFile, json_encode($capaJson, JSON_PRETTY_PRINT));
     
-    echo "  ✅ $nombre ($id): " . count($features) . " features guardados\n";
-    $guardadas++;
+    echo "  ✅ {$capa['nombre']} ({$capa['id']}): " . count($features) . " features\n";
 }
 
-echo "\n✅ $guardadas capas guardadas en: " . realpath($cacheDir) . "\n";
-
-// ============================================================
-// 🔍 VERIFICAR ARCHIVOS GUARDADOS
-// ============================================================
-echo "\n🔍 Verificando archivos guardados:\n";
-$archivosGuardados = glob($cacheDir . '*.json');
-foreach ($archivosGuardados as $f) {
-    $nombre = basename($f);
-    // Saltar .gitkeep y README.md
-    if ($nombre === '.gitkeep' || $nombre === 'README.md') continue;
-    
-    $contenido = file_get_contents($f);
-    $test = json_decode($contenido, true);
-    if ($test && isset($test['features'])) {
-        echo "  ✅ " . $nombre . " - " . count($test['features']) . " features\n";
-    } else {
-        echo "  ❌ " . $nombre . " - INVÁLIDO\n";
-    }
-}
+echo "\n✅ Archivos guardados en: " . realpath($cacheDir) . "\n";
