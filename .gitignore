@@ -10,7 +10,4 @@ node_modules/
 .vscode/
 *.swp
 *.swo
-
-#data/umap_cache/*.json
-!data/umap_cache/.gitkeep
-!data/umap_cache/README.md
+# data/umap_cache/*.json  ← COMENTADO para que suba los JSON
