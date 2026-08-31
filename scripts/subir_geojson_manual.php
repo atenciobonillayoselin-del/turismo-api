@@ -1,14 +1,12 @@
 <?php
 /**
- * scripts/subir_geojson_manual.php
+ * scripts/subir_geojson_aiven.php
  * 
- * SUBE LOS GEOJSONS QUE YA TIENES EN data/umap_cache/ DIRECTAMENTE A LA BD
- * SIN INTENTAR DESCARGAR NADA DE UMAP
+ * SUBE LOS GEOJSONS DIRECTAMENTE A AIVEN (sin pasar por database.php)
  * 
  * MODO DE USO:
- *   php scripts/subir_geojson_manual.php
- *   php scripts/subir_geojson_manual.php --archivo=NOMBRE.json   (solo uno)
- *   php scripts/subir_geojson_manual.php --limpiar               (limpia BD antes de subir)
+ *   php scripts/subir_geojson_aiven.php --limpiar
+ *   php scripts/subir_geojson_aiven.php
  */
 
 declare(strict_types=1);
@@ -18,17 +16,30 @@ if (PHP_SAPI !== 'cli') {
     exit("Solo CLI.\n");
 }
 
-require_once __DIR__ . '/../config/database.php';
+// ============================================================
+// CONEXIÓN DIRECTA A AIVEN
+// ============================================================
+$DB_HOST = 'mysql-3c89e575-turismo-la-paz.d.aivencloud.com';
+$DB_PORT = 23909;
+$DB_NAME = 'defaultdb';  // o 'app_turistica_la_paz'
+$DB_USER = 'avnadmin';
+$DB_PASS = 'AVNS_l6o3iZfQycKDeBAGO4c';  // TU CONTRASEÑA DE AIVEN
+
+try {
+    $dsn = "mysql:host=$DB_HOST;port=$DB_PORT;dbname=$DB_NAME;charset=utf8mb4";
+    $pdo = new PDO($dsn, $DB_USER, $DB_PASS, [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        PDO::ATTR_EMULATE_PREPARES => false,
+    ]);
+    $pdo->exec("SET NAMES 'utf8mb4' COLLATE 'utf8mb4_spanish_ci'");
+    echo "✅ Conexión a Aiven exitosa\n\n";
+} catch (PDOException $e) {
+    die("❌ Error conectando a Aiven: " . $e->getMessage() . "\n");
+}
 
 $CACHE_DIR = dirname(__DIR__) . '/data/umap_cache';
 $LIMPIAR = in_array('--limpiar', $argv, true);
-$ARCHIVO_ESPECIFICO = null;
-
-foreach ($argv as $arg) {
-    if (strpos($arg, '--archivo=') === 0) {
-        $ARCHIVO_ESPECIFICO = substr($arg, 10);
-    }
-}
 
 // ============================================================
 // 1. VERIFICAR ARCHIVOS
@@ -37,23 +48,19 @@ if (!is_dir($CACHE_DIR)) {
     die("❌ Directorio $CACHE_DIR no existe\n");
 }
 
-if ($ARCHIVO_ESPECIFICO) {
-    $archivos = [$ARCHIVO_ESPECIFICO];
-    if (!file_exists("$CACHE_DIR/$ARCHIVO_ESPECIFICO")) {
-        die("❌ Archivo $ARCHIVO_ESPECIFICO no existe en $CACHE_DIR\n");
-    }
-} else {
-    $archivos = glob("$CACHE_DIR/*.json");
-    if (empty($archivos)) {
-        die("❌ No hay archivos .json en $CACHE_DIR\n");
-    }
-    // Convertir a solo nombres
-    $archivos = array_map('basename', $archivos);
+$archivos = glob("$CACHE_DIR/*.json");
+if (empty($archivos)) {
+    die("❌ No hay archivos .json en $CACHE_DIR\n");
 }
+
+// Filtrar solo archivos que NO sean README.md
+$archivos = array_filter($archivos, function($f) {
+    return !str_contains($f, 'README') && !str_contains($f, '.gitkeep');
+});
 
 echo "📊 Archivos a procesar: " . count($archivos) . "\n";
 foreach ($archivos as $f) {
-    echo "   📄 $f\n";
+    echo "   📄 " . basename($f) . "\n";
 }
 echo "\n";
 
@@ -130,10 +137,8 @@ $stats = [
     'ruta_parada' => 0,
 ];
 
-foreach ($archivos as $nombreArchivo) {
-    $uuid = pathinfo($nombreArchivo, PATHINFO_FILENAME);
-    $rutaArchivo = "$CACHE_DIR/$nombreArchivo";
-    
+foreach ($archivos as $rutaArchivo) {
+    $nombreArchivo = basename($rutaArchivo);
     echo "📥 Procesando: $nombreArchivo\n";
     
     $contenido = file_get_contents($rutaArchivo);
@@ -149,20 +154,32 @@ foreach ($archivos as $nombreArchivo) {
     }
     
     $features = $geojson['features'];
-    $nombreCapa = $geojson['name'] ?? $uuid;
     
-    // Extraer nombre del lugar (entre paréntesis)
-    preg_match('/\(([^)]+)\)/', $nombreCapa, $matches);
-    $grupoLugar = $matches[1] ?? $nombreCapa;
-    $nombreLimpio = trim(preg_replace('/\s*\([^)]*\)\s*/', '', $nombreCapa));
+    // Extraer nombre del archivo: minibus_254__ida__mirador_mont_culo_geojson.json
+    $nombreBase = pathinfo($nombreArchivo, PATHINFO_FILENAME);
+    $nombreBase = str_replace('_geojson', '', $nombreBase);
+    $nombreBase = str_replace('__', ' - ', $nombreBase);
+    $nombreBase = str_replace('_', ' ', $nombreBase);
+    
+    // Capitalizar palabras
+    $nombreCapa = ucwords($nombreBase);
+    
+    // Extraer lugar (última parte después de " - ")
+    $partes = explode(' - ', $nombreBase);
+    $grupoLugar = end($partes);
+    $grupoLugar = ucwords(str_replace('_', ' ', $grupoLugar));
+    
+    // Extraer sentido
+    $sentido = (stripos($nombreCapa, 'vuelta') !== false) ? 'VUELTA' : 'IDA';
+    $color = ($sentido === 'VUELTA') ? '#2980B9' : '#E74C3C';
     
     echo "   📍 Lugar: $grupoLugar\n";
-    echo "   📍 Ruta: $nombreLimpio\n";
+    echo "   📍 Ruta: $nombreCapa\n";
     echo "   📍 Features: " . count($features) . "\n";
     
-    $sentido = (stripos($nombreCapa, 'VUELTA') !== false) ? 'VUELTA' : 'IDA';
-    $color = ($sentido === 'VUELTA') ? '#2980B9' : '#E74C3C';
     $idRuta = null;
+    $coordsRuta = [];
+    $puntoLugar = null;
     
     foreach ($features as $feature) {
         $tipo = $feature['geometry']['type'] ?? '';
@@ -175,6 +192,7 @@ foreach ($archivos as $nombreArchivo) {
             $lng = (float) $coords[0];
             
             if ($lat != 0 && $lng != 0) {
+                $puntoLugar = ['lat' => $lat, 'lng' => $lng];
                 try {
                     $stmtLugar->execute([
                         ':nombre' => $grupoLugar,
@@ -183,106 +201,101 @@ foreach ($archivos as $nombreArchivo) {
                         ':longitud' => $lng,
                         ':categoria' => $props['categoria'] ?? 'Atracción turística',
                         ':grupo_umap' => $grupoLugar,
-                        ':id_umap' => $uuid,
+                        ':id_umap' => pathinfo($nombreArchivo, PATHINFO_FILENAME),
                         ':icono_umap' => $props['icon'] ?? 'star',
                         ':color_hex' => $props['color'] ?? '#E74C3C',
-                        ':uuid_capa' => $uuid,
+                        ':uuid_capa' => pathinfo($nombreArchivo, PATHINFO_FILENAME),
                     ]);
                     $stats['lugares']++;
                     echo "      ✅ Lugar: $grupoLugar ($lat, $lng)\n";
                 } catch (PDOException $e) {
-                    // Puede que ya exista, ignorar
+                    // Puede que ya exista
                 }
             }
         }
         
         // --- LÍNEA (Ruta) ---
         if ($tipo === 'LineString' && count($coords) >= 2) {
+            $coordsRuta = $coords;
             $coordsJson = json_encode($coords);
             
             try {
                 $stmtRuta->execute([
-                    ':nombre' => $nombreLimpio,
+                    ':nombre' => $nombreCapa,
                     ':descripcion' => $props['description'] ?? '',
                     ':tipo' => 'minibus',
                     ':color_hex' => $props['color'] ?? $color,
                     ':sentido' => $sentido,
                     ':id_grupo_umap' => $grupoLugar,
                     ':coords_geojson' => $coordsJson,
-                    ':uuid_capa' => $uuid,
+                    ':uuid_capa' => pathinfo($nombreArchivo, PATHINFO_FILENAME),
                 ]);
                 $idRuta = $pdo->lastInsertId();
-                if (!$idRuta) {
-                    // Buscar si ya existe
-                    $stmtFind = $pdo->prepare("SELECT id_ruta FROM ruta WHERE uuid_capa = ?");
-                    $stmtFind->execute([$uuid]);
-                    $idRuta = $stmtFind->fetchColumn();
-                }
                 $stats['rutas']++;
-                echo "      ✅ Ruta: $nombreLimpio (ID: $idRuta)\n";
+                echo "      ✅ Ruta: $nombreCapa (ID: $idRuta)\n";
             } catch (PDOException $e) {
                 echo "      ❌ Error ruta: " . $e->getMessage() . "\n";
                 continue;
             }
+        }
+    }
+    
+    // --- CREAR PARADAS DESDE LA RUTA ---
+    if ($idRuta && !empty($coordsRuta)) {
+        $total = count($coordsRuta);
+        foreach ($coordsRuta as $i => $coord) {
+            $lat = (float) $coord[1];
+            $lng = (float) $coord[0];
+            $orden = $i + 1;
             
-            // --- CREAR PARADAS ---
-            if ($idRuta) {
-                $total = count($coords);
-                foreach ($coords as $i => $coord) {
-                    $lat = (float) $coord[1];
-                    $lng = (float) $coord[0];
-                    $orden = $i + 1;
-                    
-                    if ($lat == 0 || $lng == 0) continue;
-                    
-                    try {
-                        $stmtParada->execute([
-                            ':nombre' => "Parada $orden - $grupoLugar",
-                            ':latitud' => $lat,
-                            ':longitud' => $lng,
-                            ':id_umap' => $uuid,
-                        ]);
-                        $idParada = $pdo->lastInsertId();
-                        if (!$idParada) {
-                            $stmtFind = $pdo->prepare("SELECT id_parada FROM parada WHERE latitud = ? AND longitud = ?");
-                            $stmtFind->execute([$lat, $lng]);
-                            $idParada = $stmtFind->fetchColumn();
-                        }
-                        
-                        if ($idParada) {
-                            $stmtRutaParada->execute([
-                                ':id_ruta' => $idRuta,
-                                ':id_parada' => $idParada,
-                                ':orden' => $orden,
-                                ':es_inicio' => ($orden === 1) ? 1 : 0,
-                                ':es_fin' => ($orden === $total) ? 1 : 0,
-                            ]);
-                            $stats['ruta_parada']++;
-                        }
-                    } catch (PDOException $e) {
-                        // Ignorar errores de paradas duplicadas
-                    }
+            if ($lat == 0 || $lng == 0) continue;
+            
+            try {
+                $stmtParada->execute([
+                    ':nombre' => "Parada $orden - $grupoLugar",
+                    ':latitud' => $lat,
+                    ':longitud' => $lng,
+                    ':id_umap' => pathinfo($nombreArchivo, PATHINFO_FILENAME),
+                ]);
+                $idParada = $pdo->lastInsertId();
+                if (!$idParada) {
+                    $stmtFind = $pdo->prepare("SELECT id_parada FROM parada WHERE latitud = ? AND longitud = ?");
+                    $stmtFind->execute([$lat, $lng]);
+                    $idParada = $stmtFind->fetchColumn();
                 }
-                echo "      ✅ Paradas: " . count($coords) . "\n";
                 
-                // --- ASOCIAR RUTA CON LUGAR ---
-                try {
-                    $stmtFindLugar = $pdo->prepare("SELECT id_lugar FROM lugar_turistico WHERE grupo_umap = ? LIMIT 1");
-                    $stmtFindLugar->execute([$grupoLugar]);
-                    $idLugar = $stmtFindLugar->fetchColumn();
-                    
-                    if ($idLugar) {
-                        $stmtRutaLugar->execute([
-                            ':id_ruta' => $idRuta,
-                            ':id_lugar' => $idLugar,
-                        ]);
-                        $stats['ruta_lugar']++;
-                        echo "      ✅ Asociado a lugar ID: $idLugar\n";
-                    }
-                } catch (PDOException $e) {
-                    // Ignorar
+                if ($idParada) {
+                    $stmtRutaParada->execute([
+                        ':id_ruta' => $idRuta,
+                        ':id_parada' => $idParada,
+                        ':orden' => $orden,
+                        ':es_inicio' => ($orden === 1) ? 1 : 0,
+                        ':es_fin' => ($orden === $total) ? 1 : 0,
+                    ]);
+                    $stats['ruta_parada']++;
                 }
+            } catch (PDOException $e) {
+                // Ignorar errores de paradas duplicadas
             }
+        }
+        echo "      ✅ Paradas: $total\n";
+        
+        // --- ASOCIAR RUTA CON LUGAR ---
+        try {
+            $stmtFindLugar = $pdo->prepare("SELECT id_lugar FROM lugar_turistico WHERE grupo_umap = ? LIMIT 1");
+            $stmtFindLugar->execute([$grupoLugar]);
+            $idLugar = $stmtFindLugar->fetchColumn();
+            
+            if ($idLugar) {
+                $stmtRutaLugar->execute([
+                    ':id_ruta' => $idRuta,
+                    ':id_lugar' => $idLugar,
+                ]);
+                $stats['ruta_lugar']++;
+                echo "      ✅ Asociado a lugar ID: $idLugar\n";
+            }
+        } catch (PDOException $e) {
+            // Ignorar
         }
     }
     echo "\n";
