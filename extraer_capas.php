@@ -6,6 +6,7 @@
  * Busca archivos .geojson en:
  * - Raíz del proyecto (*.geojson)
  * - Carpeta geojson/ (geojson/*.geojson)
+ * - data/umap_cache/geojson/ (data/umap_cache/geojson/*.geojson)
  */
 
 // IDs de las capas (según el orden en el archivo)
@@ -41,16 +42,40 @@ $capas = [
 ];
 
 // ============================================================
-// 🔍 BUSCAR ARCHIVOS GEOJSON EN RAÍZ Y EN CARPETA geojson/
+// 🔍 BUSCAR ARCHIVOS GEOJSON EN TODAS LAS UBICACIONES
 // ============================================================
-$archivos = array_merge(
-    glob('*.geojson'),
-    glob('geojson/*.geojson'),
-    glob('geojson/*.json')  // Por si acaso
-);
+$archivos = [];
+
+// Buscar en la raíz
+$archivos = array_merge($archivos, glob('*.geojson'));
+
+// Buscar en la carpeta geojson/
+$archivos = array_merge($archivos, glob('geojson/*.geojson'));
+
+// Buscar en data/umap_cache/geojson/
+$archivos = array_merge($archivos, glob('data/umap_cache/geojson/*.geojson'));
+
+// Buscar archivos .json en geojson/ (por si acaso)
+$archivos = array_merge($archivos, glob('geojson/*.json'));
+$archivos = array_merge($archivos, glob('data/umap_cache/geojson/*.json'));
+
+// Filtrar archivos que no sean .gitkeep o README
+$archivos = array_filter($archivos, function($file) {
+    $basename = basename($file);
+    return !in_array($basename, ['.gitkeep', 'README.md']);
+});
 
 if (empty($archivos)) {
-    die("❌ No se encontraron archivos .geojson en la raíz o en la carpeta geojson/\n");
+    echo "❌ No se encontraron archivos .geojson\n";
+    echo "📁 Revisa que tengas el archivo en:\n";
+    echo "   - Raíz del proyecto: *.geojson\n";
+    echo "   - Carpeta geojson/: geojson/*.geojson\n";
+    echo "   - data/umap_cache/geojson/: data/umap_cache/geojson/*.geojson\n";
+    echo "\n📂 Contenido de la carpeta geojson/:\n";
+    system('ls -la geojson/ 2>/dev/null || dir geojson\\ 2>nul');
+    echo "\n📂 Contenido de data/umap_cache/geojson/:\n";
+    system('ls -la data/umap_cache/geojson/ 2>/dev/null || dir data\\umap_cache\\geojson\\ 2>nul');
+    exit(1);
 }
 
 echo "📂 Archivos GeoJSON encontrados:\n";
