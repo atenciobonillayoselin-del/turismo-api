@@ -32,22 +32,6 @@ try {
     $stmt->execute([':id_lugar' => $idLugar]);
     $rutas = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    if (count($rutas) === 0) {
-        $sqlFallback = "SELECT
-                            r.id_ruta,
-                            r.nombre,
-                            r.descripcion,
-                            r.tipo,
-                            r.color_hex,
-                            r.activo
-                        FROM ruta r
-                        WHERE r.activo = 1
-                        LIMIT 20";
-        $stmt2 = $pdo->prepare($sqlFallback);
-        $stmt2->execute();
-        $rutas = $stmt2->fetchAll(PDO::FETCH_ASSOC);
-    }
-
     echo json_encode([
         'success'   => true,
         'id_lugar'  => $idLugar,
