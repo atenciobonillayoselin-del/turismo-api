@@ -1,6 +1,6 @@
 <?php
 /**
- * sincronizar.php - Carga de GeoJSON locales a MySQL Aiven
+ * sincronizar.php - Carga AUTOMÁTICA de GeoJSON locales a MySQL Aiven
  * Turismo La Paz
  */
 
@@ -28,23 +28,31 @@ $DB_NAME = getenv('PDO_DATABASE') ?: 'defaultdb';
 $DB_USER = getenv('PDO_USERNAME') ?: 'avnadmin';
 $DB_PASS = getenv('PDO_PASSWORD') ?: ''; // Poner tu contraseña o usar variable de entorno
 
-define('LOCAL_GEOJSON_DIR', __DIR__ . '/data/umap_cache');
-
-// =========================================================================
-// REGISTRO DE ARCHIVOS LOCALES Y SUS NOMBRES DE RUTA
-// Mapea el nombre exacto de la carpeta umap_cache con la etiqueta deseada
-// =========================================================================
-$ARCHIVOS_LOCALES = [
-    'minibus_204__ida__mirador_killi_killi_.geojson'       => 'Minibus 204 - IDA (Mirador Killi Killi)',
-    'minibus_254__ida__mirador_mont_culo_.geojson'        => 'Minibus 254 - IDA (Mirador Montículo)',
-    'minibus_254__vuelta__mirador_mont_culo_.geojson'     => 'Minibus 254 - VUELTA (Mirador Montículo)',
-    'minibus_364__ida__parque_laicacota_.geojson'         => 'Minibus 364 - IDA (Parque Laikakota)',
-    'minibus_364__vuelta__parque_laicacota_.geojson'      => 'Minibus 364 - VUELTA (Parque Laikakota)',
-    'minibus_838__ida__laguna_cota_cota_.geojson'         => 'Minibus 838 - IDA (Laguna Cota Cota)',
-    'minibus_841__ida__mercado_de_las_brujas_.geojson'    => 'Minibus 841 - IDA (Mercado de las Brujas)',
-    'minibus_889__ida__plaza_villaroel_.geojson'          => 'Minibus 889 - IDA (Plaza Villarroel)',
-    'minibus_889__vuelta__plaza_villaroel_.geojson'       => 'Minibus 889 - VUELTA (Plaza Villarroel)',
+// Búsqueda inteligente de la carpeta umap_cache
+$posiblesRutas = [
+    __DIR__ . '/data/umap_cache',
+    __DIR__ . '/../data/umap_cache',
+    __DIR__ . '/umap_cache',
+    __DIR__ . '/../umap_cache',
 ];
+
+$rutaEncontrada = null;
+foreach ($posiblesRutas as $ruta) {
+    if (is_dir($ruta)) {
+        $rutaEncontrada = realpath($ruta);
+        break;
+    }
+}
+
+if (!$rutaEncontrada) {
+    echo json_encode([
+        'success' => false,
+        'error'   => '❌ No se encontró la carpeta umap_cache en las rutas esperadas',
+    ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    exit;
+}
+
+define('LOCAL_GEOJSON_DIR', $rutaEncontrada);
 
 if (empty($DB_PASS)) {
     echo json_encode([
@@ -54,8 +62,13 @@ if (empty($DB_PASS)) {
     exit;
 }
 
+// =========================================================================
+// ESCANEO AUTOMÁTICO DE ARCHIVOS GEOJSON EN LA CARPETA
+// =========================================================================
+$archivosEncontrados = glob(LOCAL_GEOJSON_DIR . '/*.{geojson,json}', GLOB_BRACE);
+
 $stats = [
-    'total_capas'      => count($ARCHIVOS_LOCALES),
+    'total_capas'      => count($archivosEncontrados),
     'capas_ok'         => 0,
     'lugares_insert'   => 0,
     'lugares_update'   => 0,
@@ -66,8 +79,18 @@ $stats = [
     'ruta_lugar_ok'    => 0,
     'ruta_parada_ok'   => 0,
     'warnings'         => [],
-    'debug'            => [],
+    'debug'            => [
+        "📂 Carpeta detectada: " . LOCAL_GEOJSON_DIR
+    ],
 ];
+
+if (empty($archivosEncontrados)) {
+    echo json_encode([
+        'success' => false,
+        'error'   => '⚠️ No se encontraron archivos .geojson o .json en ' . LOCAL_GEOJSON_DIR,
+    ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    exit;
+}
 
 // =========================================================================
 // CONEXIÓN A BASE DE DATOS (Aiven MySQL)
@@ -81,6 +104,9 @@ try {
     ];
 
     $sslCa = __DIR__ . '/config/ca.pem';
+    if (!file_exists($sslCa)) {
+        $sslCa = __DIR__ . '/../config/ca.pem';
+    }
     if (file_exists($sslCa)) {
         $options[PDO::MYSQL_ATTR_SSL_CA] = $sslCa;
         $options[PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT] = false;
@@ -110,9 +136,16 @@ function detectar_sentido(string $nombre): string {
     return 'NORMAL';
 }
 
+function generar_nombre_legible(string $filename): string {
+    $name = pathinfo($filename, PATHINFO_FILENAME);
+    $name = str_replace('__', ' ', $name);
+    $name = str_replace('_', ' ', $name);
+    return ucwords(trim($name));
+}
+
 function limpiar_nombre_lugar(string $nombre): string {
-    $nombre = preg_replace('/^(Minibus|minibus|Micro|micro|Teleferico|teleferico)\s*\d+\s*[-–]\s*/i', '', $nombre);
-    $nombre = preg_replace('/\s*[-–]\s*(IDA|VUELTA|ID|VTA|Vta|Vuelta)\s*$/i', '', $nombre);
+    $nombre = preg_replace('/^(Minibus|minibus|Micro|micro|Teleferico|teleferico)\s*\d+\s*[-–]?\s*/i', '', $nombre);
+    $nombre = preg_replace('/\s*[-–]?\s*(IDA|VUELTA|ID|VTA|Vta|Vuelta)\s*$/i', '', $nombre);
     $nombre = preg_replace('/\s*\([^)]*\)\s*/', '', $nombre);
     return trim($nombre);
 }
@@ -124,7 +157,7 @@ try {
     $pdo->beginTransaction();
     $stats['debug'][] = "🔓 Transacción iniciada";
 
-    // Limpieza de datos antiguos para reemplazo limpio
+    // Limpieza de datos antiguos
     $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
     $pdo->exec("DELETE FROM ruta_parada");
     $pdo->exec("DELETE FROM ruta_lugar");
@@ -134,7 +167,6 @@ try {
     $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
     $stats['debug'][] = "🧹 Tablas limpiadas correctamente";
 
-    // Preparar sentencias SQL
     $stmtLugar = $pdo->prepare("
         INSERT INTO lugar_turistico (nombre, descripcion, latitud, longitud, categoria, activo)
         VALUES (:nombre, :descripcion, :latitud, :longitud, 'Atracción turística', 1)
@@ -152,27 +184,22 @@ try {
         ON DUPLICATE KEY UPDATE nombre = VALUES(nombre), activo = 1
     ");
 
-    foreach ($ARCHIVOS_LOCALES as $archivo => $nombreCapa) {
-        $filePath = LOCAL_GEOJSON_DIR . '/' . $archivo;
-
-        if (!file_exists($filePath)) {
-            $stats['warnings'][] = "⚠️ Archivo no encontrado: $archivo";
-            continue;
-        }
+    foreach ($archivosEncontrados as $filePath) {
+        $filename = basename($filePath);
+        $nombreCapa = generar_nombre_legible($filename);
 
         $jsonRaw = file_get_contents($filePath);
         $geojson = json_decode($jsonRaw, true);
 
         if (!$geojson || !isset($geojson['features'])) {
-            $stats['warnings'][] = "⚠️ GeoJSON inválido o vacío: $archivo";
+            $stats['warnings'][] = "⚠️ GeoJSON inválido o vacío: $filename";
             continue;
         }
 
-        $sentido = detectar_sentido($nombreCapa);
+        $sentido = detectar_sentido($filename);
         $colorRuta = ($sentido === 'VUELTA') ? '#2980B9' : '#E74C3C';
         $grupoCapa = limpiar_nombre_lugar($nombreCapa);
 
-        // Crear la ruta en BD
         $stmtRuta->execute([
             ':nombre'      => $nombreCapa,
             ':descripcion' => "Ruta de " . $nombreCapa,
@@ -189,7 +216,6 @@ try {
             $coords = $feature['geometry']['coordinates'] ?? [];
             $props  = $feature['properties'] ?? [];
 
-            // PUNTOS (Lugar Turístico)
             if ($gtype === 'Point' && count($coords) >= 2) {
                 $lat = (float)$coords[1];
                 $lng = (float)$coords[0];
@@ -208,7 +234,6 @@ try {
                 $stats['lugares_insert']++;
             }
 
-            // LÍNEAS (Trazado y Paradas)
             if ($gtype === 'LineString' && count($coords) >= 2) {
                 $orden = 1;
                 $totalParadas = count($coords);
@@ -244,7 +269,6 @@ try {
             }
         }
 
-        // Relacionar Ruta con Lugar Turístico
         if ($idRuta && $idLugar) {
             $insRL = $pdo->prepare("INSERT IGNORE INTO ruta_lugar (id_ruta, id_lugar, orden) VALUES (?,?,1)");
             $insRL->execute([$idRuta, $idLugar]);
