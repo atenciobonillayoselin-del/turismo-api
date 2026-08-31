@@ -1,9 +1,9 @@
 <?php
 /**
- * sincronizar.php - Versión MEJORADA
- * - Acepta archivos con ANY nombre
- * - Extrae UUID del contenido si existe
- * - Usa el nombre del archivo como fallback
+ * sincronizar.php - Carga AUTOMÁTICA de GeoJSON locales a MySQL Aiven
+ * Turismo La Paz
+ * 
+ * ✅ USA VARIABLES DE ENTORNO (getenv) - compatible con Render.com
  */
 
 error_reporting(E_ALL);
@@ -22,120 +22,112 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 // =========================================================================
-// CONFIGURACIÓN - CREDENCIALES DIRECTAS
+// CONFIGURACIÓN - USA VARIABLES DE ENTORNO (como test_connection.php)
 // =========================================================================
-$DB_HOST = 'mysql-3c89e575-turismo-la-paz.d.aivencloud.com';
-$DB_PORT = 23909;
-$DB_NAME = 'defaultdb';
-$DB_USER = 'avnadmin';
-$DB_PASS = 'AVNS_l6o3iZfQycKDeBAGO4c';
+$DB_HOST = getenv('PDO_HOST') ?: 'mysql-3c89e575-turismo-la-paz.d.aivencloud.com';
+$DB_PORT = getenv('PDO_PORT') ?: 23909;
+$DB_NAME = getenv('PDO_DATABASE') ?: 'app_turistica_la_paz';
+$DB_USER = getenv('PDO_USERNAME') ?: 'avnadmin';
+$DB_PASS = getenv('PDO_PASSWORD') ?: '';
 
-$CACHE_DIR = __DIR__ . '/../data/umap_cache';
+// Búsqueda inteligente de la carpeta umap_cache
+$posiblesRutas = [
+    __DIR__ . '/data/umap_cache',
+    __DIR__ . '/../data/umap_cache',
+    __DIR__ . '/umap_cache',
+    __DIR__ . '/../umap_cache',
+];
 
-if (!is_dir($CACHE_DIR)) {
+$rutaEncontrada = null;
+foreach ($posiblesRutas as $ruta) {
+    if (is_dir($ruta)) {
+        $rutaEncontrada = realpath($ruta);
+        break;
+    }
+}
+
+if (!$rutaEncontrada) {
     echo json_encode([
         'success' => false,
-        'error' => '❌ No se encontró la carpeta umap_cache',
-        'busqueda' => $CACHE_DIR
+        'error'   => '❌ No se encontró la carpeta umap_cache en las rutas esperadas',
+    ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    exit;
+}
+
+define('LOCAL_GEOJSON_DIR', $rutaEncontrada);
+
+if (empty($DB_PASS)) {
+    echo json_encode([
+        'success' => false,
+        'error'   => '❌ Variable PDO_PASSWORD no configurada en Environment Variables',
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
     exit;
 }
 
 // =========================================================================
-// ESCANEAR ARCHIVOS - CUALQUIER NOMBRE
+// ESCANEO AUTOMÁTICO DE ARCHIVOS GEOJSON EN LA CARPETA
 // =========================================================================
-$archivos = glob($CACHE_DIR . '/*.json');
-$archivosGeo = glob($CACHE_DIR . '/*.geojson');
-$archivos = array_merge($archivos, $archivosGeo);
+$archivosEncontrados = glob(LOCAL_GEOJSON_DIR . '/*.{geojson,json}', GLOB_BRACE);
 
-if (empty($archivos)) {
+$stats = [
+    'total_capas'      => count($archivosEncontrados),
+    'capas_ok'         => 0,
+    'lugares_insert'   => 0,
+    'rutas_insert'     => 0,
+    'paradas_insert'   => 0,
+    'ruta_lugar_ok'    => 0,
+    'ruta_parada_ok'   => 0,
+    'warnings'         => [],
+    'debug'            => [
+        "📂 Carpeta detectada: " . LOCAL_GEOJSON_DIR
+    ],
+];
+
+if (empty($archivosEncontrados)) {
     echo json_encode([
         'success' => false,
-        'error' => '⚠️ No hay archivos .json o .geojson en ' . $CACHE_DIR
+        'error'   => '⚠️ No se encontraron archivos .geojson o .json en ' . LOCAL_GEOJSON_DIR,
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
     exit;
 }
 
 // =========================================================================
-// CONEXIÓN A BASE DE DATOS
+// CONEXIÓN A BASE DE DATOS (Aiven MySQL)
 // =========================================================================
 try {
     $dsn = "mysql:host=$DB_HOST;port=$DB_PORT;dbname=$DB_NAME;charset=utf8mb4";
-    $pdo = new PDO($dsn, $DB_USER, $DB_PASS, [
-        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+    $options = [
+        PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-        PDO::ATTR_EMULATE_PREPARES => false,
-    ]);
+        PDO::ATTR_EMULATE_PREPARES   => false,
+    ];
+
+    $sslCa = __DIR__ . '/config/ca.pem';
+    if (!file_exists($sslCa)) {
+        $sslCa = __DIR__ . '/../config/ca.pem';
+    }
+    if (file_exists($sslCa)) {
+        $options[PDO::MYSQL_ATTR_SSL_CA] = $sslCa;
+        $options[PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT] = false;
+    }
+
+    $pdo = new PDO($dsn, $DB_USER, $DB_PASS, $options);
     $pdo->exec("SET NAMES 'utf8mb4' COLLATE 'utf8mb4_spanish_ci'");
+    $pdo->exec("SET SESSION time_zone = '-04:00'");
+    
+    $stats['debug'][] = "✅ Conexión a Aiven BD exitosa → $DB_HOST:$DB_PORT/$DB_NAME";
 } catch (PDOException $e) {
+    http_response_code(500);
     echo json_encode([
         'success' => false,
-        'error' => '❌ Error de conexión: ' . $e->getMessage()
+        'error'   => '❌ BD Connection failed: ' . $e->getMessage(),
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
     exit;
 }
 
 // =========================================================================
-// FUNCIONES INTELIGENTES
+// FUNCIONES AUXILIARES
 // =========================================================================
-
-/**
- * Extrae el UUID del contenido del GeoJSON o del nombre del archivo
- */
-function extraerUUID($contenido, $nombreArchivo) {
-    // 1. Buscar en properties del GeoJSON
-    $json = json_decode($contenido, true);
-    if ($json && isset($json['features'])) {
-        foreach ($json['features'] as $feature) {
-            $props = $feature['properties'] ?? [];
-            // Buscar campos que contengan UUID
-            $campos = ['uuid', 'id', 'layer_id', 'datalayer_id', 'id_capa'];
-            foreach ($campos as $campo) {
-                if (!empty($props[$campo]) && preg_match('/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/i', $props[$campo])) {
-                    return $props[$campo];
-                }
-            }
-        }
-    }
-    
-    // 2. Intentar extraer UUID del nombre del archivo
-    $nombre = pathinfo($nombreArchivo, PATHINFO_FILENAME);
-    if (preg_match('/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/i', $nombre, $matches)) {
-        return $matches[0];
-    }
-    
-    // 3. Generar UUID basado en el nombre (consistente)
-    return md5($nombreArchivo);
-}
-
-/**
- * Detecta el nombre del lugar desde el archivo
- */
-function detectarLugar($nombreArchivo, $props) {
-    // Intentar desde el nombre del archivo
-    $nombre = pathinfo($nombreArchivo, PATHINFO_FILENAME);
-    $nombre = str_replace(['_geojson', '.geojson'], '', $nombre);
-    $nombre = str_replace(['__', '_'], ' ', $nombre);
-    
-    // Limpiar prefijos
-    $nombre = preg_replace('/^(Minibus|minibus|Micro|micro)\s*\d+\s*[-–]?\s*/i', '', $nombre);
-    $nombre = preg_replace('/\s*[-–]?\s*(IDA|VUELTA|ID|VTA|Vta|Vuelta)\s*$/i', '', $nombre);
-    $nombre = preg_replace('/\s*\([^)]*\)\s*/', '', $nombre);
-    
-    // Si el nombre está vacío o es muy corto, usar properties
-    if (strlen($nombre) < 3 && !empty($props['name'])) {
-        $nombre = $props['name'];
-    }
-    if (strlen($nombre) < 3 && !empty($props['title'])) {
-        $nombre = $props['title'];
-    }
-    if (strlen($nombre) < 3 && !empty($props['description'])) {
-        $nombre = substr($props['description'], 0, 50);
-    }
-    
-    return trim($nombre) ?: 'Lugar sin nombre';
-}
-
 function detectar_sentido(string $nombre): string {
     $n = mb_strtolower($nombre, 'UTF-8');
     if (str_contains($n, 'ida')) return 'IDA';
@@ -143,155 +135,166 @@ function detectar_sentido(string $nombre): string {
     return 'NORMAL';
 }
 
+function generar_nombre_legible(string $filename): string {
+    $name = pathinfo($filename, PATHINFO_FILENAME);
+    $name = str_replace('__', ' ', $name);
+    $name = str_replace('_', ' ', $name);
+    return ucwords(trim($name));
+}
+
+function limpiar_nombre_lugar(string $nombre): string {
+    $nombre = preg_replace('/^(Minibus|minibus|Micro|micro|Teleferico|teleferico)\s*\d+\s*[-–]?\s*/i', '', $nombre);
+    $nombre = preg_replace('/\s*[-–]?\s*(IDA|VUELTA|ID|VTA|Vta|Vuelta)\s*$/i', '', $nombre);
+    $nombre = preg_replace('/\s*\([^)]*\)\s*/', '', $nombre);
+    return trim($nombre);
+}
+
 // =========================================================================
-// EJECUCIÓN
+// EJECUCIÓN PRINCIPAL
 // =========================================================================
 try {
     $pdo->beginTransaction();
+    $stats['debug'][] = "🔓 Transacción iniciada";
+
+    // Limpieza de datos antiguos
     $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
     $pdo->exec("DELETE FROM ruta_parada");
     $pdo->exec("DELETE FROM ruta_lugar");
-    $pdo->exec("DELETE FROM lugar_turistico");
     $pdo->exec("DELETE FROM ruta");
+    $pdo->exec("DELETE FROM lugar_turistico");
     $pdo->exec("DELETE FROM parada");
     $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
-
-    $stats = [
-        'total_archivos' => count($archivos),
-        'procesados' => 0,
-        'rutas' => 0,
-        'lugares' => 0,
-        'paradas' => 0,
-        'errores' => []
-    ];
+    $stats['debug'][] = "🧹 Tablas limpiadas correctamente";
 
     $stmtLugar = $pdo->prepare("
-        INSERT INTO lugar_turistico (nombre, descripcion, latitud, longitud, categoria, uuid_capa, activo)
-        VALUES (:nombre, :descripcion, :latitud, :longitud, 'Atracción turística', :uuid, 1)
+        INSERT INTO lugar_turistico (nombre, descripcion, latitud, longitud, categoria, activo)
+        VALUES (:nombre, :descripcion, :latitud, :longitud, 'Atracción turística', 1)
+        ON DUPLICATE KEY UPDATE nombre = VALUES(nombre), activo = 1
     ");
 
     $stmtRuta = $pdo->prepare("
-        INSERT INTO ruta (nombre, descripcion, tipo, color_hex, sentido, uuid_capa, activo)
-        VALUES (:nombre, :descripcion, 'minibus', :color_hex, :sentido, :uuid, 1)
+        INSERT INTO ruta (nombre, descripcion, tipo, color_hex, sentido, activo)
+        VALUES (:nombre, :descripcion, 'minibus', :color_hex, :sentido, 1)
     ");
 
     $stmtParada = $pdo->prepare("
-        INSERT INTO parada (nombre, latitud, longitud, uuid_capa, activo)
-        VALUES (:nombre, :latitud, :longitud, :uuid, 1)
+        INSERT INTO parada (nombre, latitud, longitud, activo)
+        VALUES (:nombre, :latitud, :longitud, 1)
+        ON DUPLICATE KEY UPDATE nombre = VALUES(nombre), activo = 1
     ");
 
-    foreach ($archivos as $filePath) {
+    foreach ($archivosEncontrados as $filePath) {
         $filename = basename($filePath);
-        echo "📄 Procesando: $filename\n";
-        
+        $nombreCapa = generar_nombre_legible($filename);
+
         $jsonRaw = file_get_contents($filePath);
         $geojson = json_decode($jsonRaw, true);
 
         if (!$geojson || !isset($geojson['features'])) {
-            $stats['errores'][] = "$filename no es GeoJSON válido";
+            $stats['warnings'][] = "⚠️ GeoJSON inválido o vacío: $filename";
             continue;
         }
 
-        // Extraer UUID del archivo
-        $uuid = extraerUUID($jsonRaw, $filename);
-        
-        // Detectar lugar
-        $primerFeature = $geojson['features'][0] ?? [];
-        $props = $primerFeature['properties'] ?? [];
-        $nombreLugar = detectarLugar($filename, $props);
-        
         $sentido = detectar_sentido($filename);
         $colorRuta = ($sentido === 'VUELTA') ? '#2980B9' : '#E74C3C';
+        $grupoCapa = limpiar_nombre_lugar($nombreCapa);
 
-        $idRuta = null;
+        $stmtRuta->execute([
+            ':nombre'      => $nombreCapa,
+            ':descripcion' => "Ruta de " . $nombreCapa,
+            ':color_hex'   => $colorRuta,
+            ':sentido'     => $sentido,
+        ]);
+        $idRuta = $pdo->lastInsertId();
+        $stats['rutas_insert']++;
+
         $idLugar = null;
-        $coordsRuta = [];
 
         foreach ($geojson['features'] as $feature) {
-            $gtype = $feature['geometry']['type'] ?? '';
+            $gtype  = $feature['geometry']['type'] ?? '';
             $coords = $feature['geometry']['coordinates'] ?? [];
-            $props = $feature['properties'] ?? [];
+            $props  = $feature['properties'] ?? [];
 
             if ($gtype === 'Point' && count($coords) >= 2) {
                 $lat = (float)$coords[1];
                 $lng = (float)$coords[0];
-                
-                if ($lat != 0 && $lng != 0) {
-                    $stmtLugar->execute([
-                        ':nombre' => $props['name'] ?? $nombreLugar,
-                        ':descripcion' => $props['description'] ?? '',
-                        ':latitud' => $lat,
-                        ':longitud' => $lng,
-                        ':uuid' => $uuid
-                    ]);
-                    $idLugar = $pdo->lastInsertId();
-                    $stats['lugares']++;
-                }
+                $nomPunto = trim($props['name'] ?? '') ?: $grupoCapa;
+
+                $stmtLugar->execute([
+                    ':nombre'      => $nomPunto,
+                    ':descripcion' => $props['description'] ?? '',
+                    ':latitud'     => $lat,
+                    ':longitud'    => $lng,
+                ]);
+
+                $selId = $pdo->prepare("SELECT id_lugar FROM lugar_turistico WHERE ABS(latitud - ?) < 0.00001 AND ABS(longitud - ?) < 0.00001 LIMIT 1");
+                $selId->execute([$lat, $lng]);
+                $idLugar = $selId->fetchColumn();
+                $stats['lugares_insert']++;
             }
 
             if ($gtype === 'LineString' && count($coords) >= 2) {
-                $coordsRuta = $coords;
-                $nombreRuta = $props['name'] ?? $props['title'] ?? pathinfo($filename, PATHINFO_FILENAME);
-                
-                $stmtRuta->execute([
-                    ':nombre' => $nombreRuta,
-                    ':descripcion' => $props['description'] ?? "Ruta $nombreRuta",
-                    ':color_hex' => $props['color'] ?? $colorRuta,
-                    ':sentido' => $sentido,
-                    ':uuid' => $uuid
-                ]);
-                $idRuta = $pdo->lastInsertId();
-                $stats['rutas']++;
-            }
-        }
+                $orden = 1;
+                $totalParadas = count($coords);
 
-        // Guardar paradas
-        if ($idRuta && !empty($coordsRuta)) {
-            $total = count($coordsRuta);
-            foreach ($coordsRuta as $i => $coord) {
-                $lat = (float)$coord[1];
-                $lng = (float)$coord[0];
-                if ($lat == 0 || $lng == 0) continue;
-                
-                $orden = $i + 1;
-                $stmtParada->execute([
-                    ':nombre' => "Parada $orden - $nombreLugar",
-                    ':latitud' => $lat,
-                    ':longitud' => $lng,
-                    ':uuid' => $uuid
-                ]);
-                $idParada = $pdo->lastInsertId();
-                $stats['paradas']++;
-                
-                if ($idParada) {
-                    $insRP = $pdo->prepare("INSERT INTO ruta_parada (id_ruta, id_parada, orden, es_inicio, es_fin) VALUES (?,?,?,?,?)");
-                    $insRP->execute([$idRuta, $idParada, $orden, ($orden === 1), ($orden === $total)]);
+                foreach ($coords as $coord) {
+                    $lat = (float)$coord[1];
+                    $lng = (float)$coord[0];
+                    if ($lat == 0 || $lng == 0) continue;
+
+                    $nomParada = "Punto $orden de $nombreCapa";
+
+                    $stmtParada->execute([
+                        ':nombre'   => $nomParada,
+                        ':latitud'  => $lat,
+                        ':longitud' => $lng,
+                    ]);
+
+                    $selP = $pdo->prepare("SELECT id_parada FROM parada WHERE ABS(latitud - ?) < 0.00001 AND ABS(longitud - ?) < 0.00001 LIMIT 1");
+                    $selP->execute([$lat, $lng]);
+                    $idParada = $selP->fetchColumn();
+
+                    if ($idParada) {
+                        $stats['paradas_insert']++;
+                        $esInicio = ($orden === 1) ? 1 : 0;
+                        $esFin    = ($orden === $totalParadas) ? 1 : 0;
+
+                        $insRP = $pdo->prepare("INSERT IGNORE INTO ruta_parada (id_ruta, id_parada, orden, es_inicio, es_fin) VALUES (?,?,?,?,?)");
+                        $insRP->execute([$idRuta, $idParada, $orden, $esInicio, $esFin]);
+                        $stats['ruta_parada_ok']++;
+                    }
+                    $orden++;
                 }
             }
         }
 
-        // Asociar ruta-lugar
         if ($idRuta && $idLugar) {
             $insRL = $pdo->prepare("INSERT IGNORE INTO ruta_lugar (id_ruta, id_lugar, orden) VALUES (?,?,1)");
             $insRL->execute([$idRuta, $idLugar]);
+            $stats['ruta_lugar_ok']++;
         }
 
-        $stats['procesados']++;
+        $stats['capas_ok']++;
     }
 
     $pdo->commit();
+    $stats['debug'][] = "💾 Sincronización finalizada y COMMIT realizado";
 
     echo json_encode([
         'success' => true,
-        'mensaje' => '✅ Sincronización completada',
-        'stats' => $stats
+        'mensaje' => 'Sincronización de GeoJSON locales completada con éxito',
+        'stats'   => $stats,
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
 
 } catch (Throwable $e) {
-    if ($pdo->inTransaction()) $pdo->rollBack();
+    if ($pdo->inTransaction()) {
+        $pdo->rollBack();
+    }
+    http_response_code(500);
     echo json_encode([
         'success' => false,
-        'error' => $e->getMessage(),
-        'linea' => $e->getLine()
+        'error'   => $e->getMessage(),
+        'linea'   => $e->getLine(),
+        'debug'   => $stats['debug'],
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
 }
