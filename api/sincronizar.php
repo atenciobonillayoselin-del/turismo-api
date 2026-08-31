@@ -6,9 +6,10 @@
  * ✅ Endpoint: https://umap.openstreetmap.fr/api/0.1/map/1451289/
  * ✅ 5 niveles de fallback para descarga de capas
  * ✅ Transacciones seguras con MySQL
+ * ✅ Compatible con Aiven (sin GET_LOCK)
  * 
  * @package TurismoLaPaz
- * @version 20.0-public-api-final
+ * @version 21.0-public-api-no-lock
  */
 
 error_reporting(E_ALL);
@@ -340,7 +341,7 @@ function pedirProxy(string $targetUrl, array &$stats, int $timeout = 30): ?array
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT => $timeout,
         CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/20.0',
+        CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/21.0',
         CURLOPT_HTTPHEADER => [
             'Accept: application/geo+json, application/json, text/html, */*;q=0.8',
             'Accept-Language: es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -360,9 +361,6 @@ function pedirProxy(string $targetUrl, array &$stats, int $timeout = 30): ?array
             $resp = substr($resp, 1);
         }
         $resp = trim($resp);
-        
-        $preview = substr($resp, 0, 200);
-        $stats['debug'][] = "  ↳ Preview: " . json_encode($preview);
         
         // Verificar si es HTML
         if (stripos($resp, '<!DOCTYPE') === 0 || stripos($resp, '<html') === 0) {
@@ -394,7 +392,7 @@ function httpGet(string $url, int $timeout = 15): ?string {
         CURLOPT_FOLLOWLOCATION => true,
         CURLOPT_MAXREDIRS => 3,
         CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/20.0',
+        CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/21.0',
         CURLOPT_HTTPHEADER => [
             'Accept: application/json, text/html, */*',
             'Accept-Language: es-ES,es;q=0.9',
@@ -639,65 +637,19 @@ function limpiar_nombre_lugar(string $nombre): string {
 }
 
 // =========================================================================
-// FUNCIONES DE BLOQUEO MYSQL
+// FUNCIONES DE BLOQUEO MYSQL (DESACTIVADAS PARA AIVEN)
 // =========================================================================
 
 function adquirirLock(PDO $pdo, array &$stats): bool {
-    $lockName = 'turismo_lapaz_sincronizacion';
-    $timeout = 2;
-    
-    $stats['debug'][] = "🔒 Adquiriendo lock MySQL: $lockName (timeout: {$timeout}s)";
-    
-    try {
-        // Intentar liberar lock zombie
-        $stmt = $pdo->prepare("SELECT RELEASE_LOCK(?)");
-        $stmt->execute([$lockName]);
-        
-        $stmt = $pdo->prepare("SELECT GET_LOCK(?, ?)");
-        $stmt->execute([$lockName, $timeout]);
-        $result = $stmt->fetchColumn();
-        
-        if ($result == 1) {
-            $stats['debug'][] = "✅ Lock adquirido correctamente";
-            $stats['lock_adquirido'] = true;
-            return true;
-        } else {
-            $stats['warnings'][] = "⚠️ No se pudo adquirir el lock";
-            $stats['lock_adquirido'] = false;
-            return false;
-        }
-    } catch (PDOException $e) {
-        $stats['warnings'][] = "⚠️ Error al adquirir lock: " . $e->getMessage();
-        $stats['lock_adquirido'] = false;
-        return false;
-    }
+    $stats['debug'][] = "🔓 Lock desactivado (compatibilidad Aiven)";
+    $stats['lock_adquirido'] = true;
+    return true;
 }
 
 function liberarLock(PDO $pdo, array &$stats): bool {
-    if (!$stats['lock_adquirido']) {
-        return true;
-    }
-    
-    $lockName = 'turismo_lapaz_sincronizacion';
-    $stats['debug'][] = "🔓 Liberando lock MySQL: $lockName";
-    
-    try {
-        $stmt = $pdo->prepare("SELECT RELEASE_LOCK(?)");
-        $stmt->execute([$lockName]);
-        $result = $stmt->fetchColumn();
-        
-        if ($result == 1) {
-            $stats['debug'][] = "✅ Lock liberado correctamente";
-        } else {
-            $stats['warnings'][] = "⚠️ El lock ya no existía";
-        }
-        $stats['lock_adquirido'] = false;
-        return true;
-    } catch (PDOException $e) {
-        $stats['warnings'][] = "⚠️ Error al liberar lock: " . $e->getMessage();
-        $stats['lock_adquirido'] = false;
-        return false;
-    }
+    $stats['debug'][] = "🔓 Lock liberado (no operativo)";
+    $stats['lock_adquirido'] = false;
+    return true;
 }
 
 // =========================================================================
@@ -997,19 +949,12 @@ function ejecutarTransaccionSegura(PDO $pdo, array &$stats, array $capasConDatos
 $lockAdquirido = false;
 
 try {
-    $stats['debug'][] = "🚀 Iniciando sincronización v20.0-public-api-final → uMap#" . UMAP_MAP_ID;
+    $stats['debug'][] = "🚀 Iniciando sincronización v21.0-public-api-no-lock → uMap#" . UMAP_MAP_ID;
     
-    // ADQUIRIR LOCK
-    if (!adquirirLock($pdo, $stats)) {
-        // Intentar liberar y reintentar
-        $stmt = $pdo->prepare("SELECT RELEASE_LOCK('turismo_lapaz_sincronizacion')");
-        $stmt->execute();
-        sleep(1);
-        if (!adquirirLock($pdo, $stats)) {
-            throw new RuntimeException("❌ No se pudo adquirir el lock.");
-        }
-    }
+    // ADQUIRIR LOCK - DESACTIVADO
+    $stats['lock_adquirido'] = true;
     $lockAdquirido = true;
+    $stats['debug'][] = "🔓 Lock desactivado (compatibilidad Aiven)";
     
     // DETECTAR CAPAS
     $capasDetectadas = detectarCapasAutomaticamente($stats);
@@ -1105,7 +1050,7 @@ try {
         'success' => ($status !== 'ERROR'),
         'status'  => $status,
         'map_id'  => UMAP_MAP_ID,
-        'version' => '20.0-public-api-final',
+        'version' => '21.0-public-api-no-lock',
         'metodo_deteccion' => $stats['metodo_deteccion'] ?? 'desconocido',
         'metodo_descarga_principal' => $metodoPrincipal,
         'worker_used' => strpos($metodoPrincipal, 'L1-worker') !== false,
