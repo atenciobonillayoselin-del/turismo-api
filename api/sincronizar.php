@@ -1,6 +1,7 @@
 <?php
 /**
- * sincronizar.php - Sincroniza GeoJSON con MySQL (VERSIÓN MEJORADA)
+ * sincronizar.php - Sincroniza GeoJSON con MySQL (VERSIÓN CORREGIDA)
+ * - Usa uuid_capa correctamente
  * - Guarda nombres legibles
  * - Crea relaciones ruta-lugar automáticamente
  */
@@ -63,18 +64,10 @@ try {
 }
 
 // =========================================================================
-// FUNCIONES MEJORADAS
+// FUNCIONES
 // =========================================================================
 
-/**
- * Extrae nombre legible del archivo
- * Ejemplo: "8bfdeb7b-421c-4ff6-9643-53c75c3a88bc" → "Mirador Montículo"
- */
 function extraerNombreLugar($nombreArchivo, $props = []) {
-    // 1. Intentar desde el nombre del archivo
-    $nombre = pathinfo($nombreArchivo, PATHINFO_FILENAME);
-    
-    // 2. Si es un UUID, buscar en el mapeo
     $mapeo = [
         '8bfdeb7b-421c-4ff6-9643-53c75c3a88bc' => 'Mirador Montículo',
         '1131cb1a-631f-4d7b-8f33-f46a469366f9' => 'Mirador Montículo (Vuelta)',
@@ -86,19 +79,11 @@ function extraerNombreLugar($nombreArchivo, $props = []) {
         'cota_cota_838' => 'Laguna Cota Cota',
     ];
     
-    if (isset($mapeo[$nombre])) {
-        return $mapeo[$nombre];
-    }
+    $nombre = pathinfo($nombreArchivo, PATHINFO_FILENAME);
+    if (isset($mapeo[$nombre])) return $mapeo[$nombre];
+    if (!empty($props['name'])) return $props['name'];
+    if (!empty($props['title'])) return $props['title'];
     
-    // 3. Intentar desde properties
-    if (!empty($props['name'])) {
-        return $props['name'];
-    }
-    if (!empty($props['title'])) {
-        return $props['title'];
-    }
-    
-    // 4. Limpiar nombre del archivo
     $nombre = str_replace(['_geojson', '.geojson'], '', $nombre);
     $nombre = str_replace(['__', '_'], ' ', $nombre);
     $nombre = preg_replace('/^(Minibus|minibus|Micro|micro)\s*\d+\s*[-–]?\s*/i', '', $nombre);
@@ -108,9 +93,6 @@ function extraerNombreLugar($nombreArchivo, $props = []) {
     return trim($nombre) ?: 'Lugar sin nombre';
 }
 
-/**
- * Detecta sentido (IDA/VUELTA)
- */
 function detectarSentido($nombreArchivo) {
     $n = strtolower($nombreArchivo);
     if (strpos($n, 'vuelta') !== false) return 'VUELTA';
@@ -118,17 +100,11 @@ function detectarSentido($nombreArchivo) {
     return 'NORMAL';
 }
 
-/**
- * Extrae UUID del nombre del archivo
- */
-function extraerUUID($nombreArchivo) {
+function extraerUuid($nombreArchivo) {
     $nombre = pathinfo($nombreArchivo, PATHINFO_FILENAME);
-    
-    // Si es un UUID válido
     if (preg_match('/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/i', $nombre, $matches)) {
         return $matches[0];
     }
-    
     return $nombre;
 }
 
@@ -157,7 +133,7 @@ try {
         'errores' => []
     ];
 
-    // Preparar consultas
+    // ✅ USAMOS uuid_capa (existe en todas las tablas)
     $stmtLugar = $pdo->prepare("
         INSERT INTO lugar_turistico (nombre, descripcion, latitud, longitud, categoria, uuid_capa, activo)
         VALUES (:nombre, :descripcion, :latitud, :longitud, 'Atracción turística', :uuid, 1)
@@ -185,12 +161,10 @@ try {
             continue;
         }
 
-        // Extraer datos
-        $uuid = extraerUUID($filename);
+        $uuid = extraerUuid($filename);
         $sentido = detectarSentido($filename);
         $colorRuta = ($sentido === 'VUELTA') ? '#2980B9' : '#E74C3C';
         
-        // Obtener primer feature para properties
         $primerFeature = $geojson['features'][0] ?? [];
         $props = $primerFeature['properties'] ?? [];
         $nombreLugar = extraerNombreLugar($filename, $props);
@@ -198,7 +172,6 @@ try {
         $idRuta = null;
         $idLugar = null;
         $coordsRuta = [];
-        $puntoLugar = null;
 
         foreach ($geojson['features'] as $feature) {
             $gtype = $feature['geometry']['type'] ?? '';
@@ -210,8 +183,6 @@ try {
                 $lng = (float)$coords[0];
                 
                 if ($lat != 0 && $lng != 0) {
-                    $puntoLugar = ['lat' => $lat, 'lng' => $lng];
-                    
                     $stmtLugar->execute([
                         ':nombre' => $nombreLugar,
                         ':descripcion' => $props['description'] ?? '',
@@ -228,7 +199,6 @@ try {
                 $coordsRuta = $coords;
                 $nombreRuta = $props['name'] ?? $props['title'] ?? $nombreLugar;
                 
-                // Agregar sentido al nombre si no lo tiene
                 if ($sentido !== 'NORMAL' && !str_contains($nombreRuta, $sentido)) {
                     $nombreRuta = "$nombreRuta ($sentido)";
                 }
@@ -270,7 +240,7 @@ try {
             }
         }
 
-        // ✅ ASOCIAR RUTA-LUGAR (esto es lo que faltaba)
+        // ✅ ASOCIAR RUTA-LUGAR
         if ($idRuta && $idLugar) {
             $insRL = $pdo->prepare("INSERT IGNORE INTO ruta_lugar (id_ruta, id_lugar, orden) VALUES (?,?,1)");
             $insRL->execute([$idRuta, $idLugar]);
