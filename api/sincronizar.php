@@ -3,7 +3,7 @@
  * sincronizar.php - Sincronización 100% AUTOMÁTICA de uMap → MySQL Aiven
  * 
  * @package TurismoLaPaz
- * @version 10.0-transaction-robust
+ * @version 11.0-transaction-final
  */
 
 error_reporting(E_ALL);
@@ -199,7 +199,7 @@ function migrarEsquema(PDO $pdo, array &$stats): void {
 migrarEsquema($pdo, $stats);
 
 // =========================================================================
-// FUNCIONES DE DESCARGA
+// FUNCIONES DE DESCARGA (NO MODIFICAR - YA FUNCIONAN)
 // =========================================================================
 
 function buildUrlVariants(string $capaId): array {
@@ -301,7 +301,7 @@ function pedirProxy(string $targetUrl, array &$stats, int $timeout = 30): ?array
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT => $timeout,
         CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/10.0',
+        CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/11.0',
         CURLOPT_HTTPHEADER => [
             'Accept: application/geo+json, application/json, text/html, */*;q=0.8',
             'Accept-Language: es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -321,7 +321,7 @@ function pedirProxy(string $targetUrl, array &$stats, int $timeout = 30): ?array
 }
 
 // ============================================================
-// DETECCIÓN AUTOMÁTICA DE CAPAS
+// DETECCIÓN AUTOMÁTICA DE CAPAS (NO MODIFICAR - YA FUNCIONA)
 // ============================================================
 function detectarCapasAutomaticamente(array &$stats): array {
     $stats['debug'][] = "🔍 Detectando capas automáticamente del mapa #" . UMAP_MAP_ID;
@@ -422,7 +422,7 @@ function detectarCapasAutomaticamente(array &$stats): array {
         }
     }
     
-    // MÉTODO 6: Último fallback - IDs predefinidos
+    // MÉTODO 6: Último fallback - IDs predefinidos (NO ELIMINAR)
     if (empty($capasDetectadas)) {
         $metodosIntentados[] = 'predefinidos';
         $stats['debug'][] = "  ↳ Fallback final (M6): usando IDs predefinidos...";
@@ -448,7 +448,7 @@ function detectarCapasAutomaticamente(array &$stats): array {
 }
 
 // ============================================================
-// FUNCIÓN PARA DESCARGAR CAPA CON MULTI-NIVEL
+// FUNCIÓN PARA DESCARGAR CAPA CON MULTI-NIVEL (NO MODIFICAR)
 // ============================================================
 function descargarCapaMultiNivel(string $capaId, array &$stats): ?array {
     $stats['debug'][] = "  📥 Descargando capa: $capaId";
@@ -470,7 +470,7 @@ function descargarCapaMultiNivel(string $capaId, array &$stats): ?array {
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => 30,
             CURLOPT_SSL_VERIFYPEER => false,
-            CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/10.0',
+            CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/11.0',
             CURLOPT_HTTPHEADER => [
                 'X-Proxy-Forward-Cookie: ' . UMAP_TOKEN,
                 'Accept: application/geo+json, application/json',
@@ -488,7 +488,7 @@ function descargarCapaMultiNivel(string $capaId, array &$stats): ?array {
         }
     }
     
-    // NIVEL 3: Descarga DIRECTA
+    // NIVEL 3: Descarga DIRECTA (FALLBACK PRINCIPAL - ACTUALMENTE FUNCIONA)
     foreach (buildUrlVariants($capaId) as $i => $url) {
         $r = curlGetRaw($url);
         if ($r !== null && $r['code'] === 200) {
@@ -531,7 +531,7 @@ function descargarCapaMultiNivel(string $capaId, array &$stats): ?array {
 }
 
 // =========================================================================
-// FUNCIONES AUXILIARES DE NEGOCIO
+// FUNCIONES AUXILIARES DE NEGOCIO (NO MODIFICAR)
 // =========================================================================
 function detectar_sentido(string $nombre): string {
     $n = mb_strtolower($nombre, 'UTF-8');
@@ -568,31 +568,41 @@ function limpiar_nombre_lugar(string $nombre): string {
 }
 
 // =========================================================================
-// FUNCIÓN PARA EJECUTAR TRANSACCIÓN DE FORMA SEGURA
+// FUNCIÓN PARA EJECUTAR TRANSACCIÓN DE FORMA SEGURA (CORREGIDA)
 // =========================================================================
 function ejecutarTransaccionSegura(PDO $pdo, array &$stats, array $capasConDatos): bool {
-    global $stmtLugarUpsert, $stmtRutaUpsert, $stmtParadaUpsert;
-    
     $idLugaresPorGrupo = [];
-    $stats['transaction_active'] = true;
     
     try {
+        // ✅ 1. INICIAR TRANSACCIÓN PRIMERO
         $pdo->beginTransaction();
+        $stats['transaction_active'] = true;
         $stats['debug'][] = "🔓 Transacción iniciada";
         
+        // ✅ 2. DESACTIVAR FOREIGN KEY CHECKS PARA LIMPIEZA
         $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
-        $pdo->exec("TRUNCATE TABLE ruta_parada");
-        $pdo->exec("TRUNCATE TABLE ruta_lugar");
-        $pdo->exec("DELETE FROM ruta");
-        $pdo->exec("ALTER TABLE ruta AUTO_INCREMENT = 1");
-        $pdo->exec("DELETE FROM lugar_turistico");
-        $pdo->exec("ALTER TABLE lugar_turistico AUTO_INCREMENT = 1");
-        $pdo->exec("DELETE FROM parada");
-        $pdo->exec("ALTER TABLE parada AUTO_INCREMENT = 1");
-        $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
-        $stats['debug'][] = "🧹 Tablas limpiadas correctamente";
         
-        // PREPARAR STATEMENTS CON UPSERT
+        // ✅ 3. LIMPIAR TABLAS CON DELETE (NO TRUNCATE - EVITA COMMIT IMPLÍCITO)
+        $pdo->exec("DELETE FROM ruta_parada");
+        $stats['debug'][] = "  🗑️ ruta_parada limpiada";
+        
+        $pdo->exec("DELETE FROM ruta_lugar");
+        $stats['debug'][] = "  🗑️ ruta_lugar limpiada";
+        
+        $pdo->exec("DELETE FROM ruta");
+        $stats['debug'][] = "  🗑️ ruta limpiada";
+        
+        $pdo->exec("DELETE FROM lugar_turistico");
+        $stats['debug'][] = "  🗑️ lugar_turistico limpiada";
+        
+        $pdo->exec("DELETE FROM parada");
+        $stats['debug'][] = "  🗑️ parada limpiada";
+        
+        // ✅ 4. REACTIVAR FOREIGN KEY CHECKS
+        $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
+        $stats['debug'][] = "🧹 Tablas limpiadas sin TRUNCATE";
+        
+        // ✅ 5. PREPARAR STATEMENTS CON UPSERT
         $stmtLugarUpsert = $pdo->prepare("
             INSERT INTO lugar_turistico (
                 nombre, descripcion, latitud, longitud, categoria, 
@@ -641,7 +651,7 @@ function ejecutarTransaccionSegura(PDO $pdo, array &$stats, array $capasConDatos
                 updated_at = NOW()
         ");
         
-        // PROCESAR CADA CAPA
+        // ✅ 6. PROCESAR CADA CAPA
         foreach ($capasConDatos as $info) {
             $uuid = $info['uuid'];
             $nombreCapa = $info['nombre'];
@@ -825,25 +835,30 @@ function ejecutarTransaccionSegura(PDO $pdo, array &$stats, array $capasConDatos
             }
         }
         
-        // ✅ COMMIT DE LA TRANSACCIÓN
-        $pdo->commit();
+        // ✅ 7. COMMIT SEGURO - VERIFICAR QUE HAY TRANSACCIÓN ACTIVA
+        if ($pdo->inTransaction()) {
+            $pdo->commit();
+            $stats['debug'][] = "💾 Transacción COMMIT confirmada";
+        } else {
+            $stats['warnings'][] = "⚠️ No hay transacción activa al intentar COMMIT";
+            return false;
+        }
+        
         $stats['transaction_active'] = false;
-        $stats['debug'][] = "💾 Transacción COMMIT confirmada";
         return true;
         
     } catch (Throwable $e) {
-        // ✅ ROLLBACK SEGURO - solo si la transacción está activa
-        if ($stats['transaction_active']) {
+        // ✅ 8. ROLLBACK SEGURO - SOLO SI HAY TRANSACCIÓN ACTIVA
+        if ($pdo->inTransaction()) {
             try {
-                if ($pdo->inTransaction()) {
-                    $pdo->rollBack();
-                    $stats['debug'][] = "🔙 Transacción ROLLBACK ejecutado";
-                }
+                $pdo->rollBack();
+                $stats['debug'][] = "🔙 Transacción ROLLBACK ejecutado";
             } catch (Throwable $rollbackError) {
                 $stats['warnings'][] = '⚠️ Error en rollback: ' . $rollbackError->getMessage();
             }
-            $stats['transaction_active'] = false;
         }
+        
+        $stats['transaction_active'] = false;
         throw $e;
     }
 }
@@ -852,7 +867,7 @@ function ejecutarTransaccionSegura(PDO $pdo, array &$stats, array $capasConDatos
 // EJECUCIÓN PRINCIPAL
 // =========================================================================
 try {
-    $stats['debug'][] = "🚀 Iniciando sincronización v10.0-transaction-robust → uMap#" . UMAP_MAP_ID;
+    $stats['debug'][] = "🚀 Iniciando sincronización v11.0-transaction-final → uMap#" . UMAP_MAP_ID;
     
     // ============================================================
     // PASO 1: DETECTAR CAPAS AUTOMÁTICAMENTE
@@ -943,7 +958,7 @@ try {
         'success' => ($status !== 'ERROR'),
         'status'  => $status,
         'map_id'  => UMAP_MAP_ID,
-        'version' => '10.0-transaction-robust',
+        'version' => '11.0-transaction-final',
         'metodo_descarga_principal' => $metodoPrincipal,
         'worker_used' => strpos($metodoPrincipal, 'L1-worker') !== false,
         'worker_url' => UMAP_PROXY_WORKER,
@@ -972,6 +987,7 @@ try {
         'warnings' => $stats['warnings'],
         'debug'    => $stats['debug'],
         'schema_migration' => $stats['schema_migration'],
+        'transaction_active' => $stats['transaction_active'],
         'setup_checklist' => [
             'Worker_URL' => UMAP_PROXY_WORKER,
             'UMAP_PROXY_URL_configurado'  => !empty(UMAP_PROXY_URLS),
@@ -993,6 +1009,7 @@ try {
         } catch (Throwable $rollbackError) {
             // Silenciar errores de rollback
         }
+        $stats['transaction_active'] = false;
     }
     
     http_response_code(500);
