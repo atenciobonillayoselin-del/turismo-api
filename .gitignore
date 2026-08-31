@@ -11,6 +11,6 @@ node_modules/
 *.swp
 *.swo
 
-data/umap_cache/*.json
+#data/umap_cache/*.json
 !data/umap_cache/.gitkeep
 !data/umap_cache/README.md
