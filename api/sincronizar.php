@@ -3,7 +3,7 @@
  * sincronizar.php - Sincronización 100% AUTOMÁTICA de uMap → MySQL Aiven
  * 
  * @package TurismoLaPaz
- * @version 9.0-auto-discovery-fixed
+ * @version 10.0-transaction-robust
  */
 
 error_reporting(E_ALL);
@@ -76,7 +76,7 @@ $stats = [
     'gha_triggered'    => false,
     'cache_status'     => [],
     'capas_detectadas' => [],
-    'transaction_started' => false,
+    'transaction_active' => false,
 ];
 
 // =========================================================================
@@ -301,7 +301,7 @@ function pedirProxy(string $targetUrl, array &$stats, int $timeout = 30): ?array
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT => $timeout,
         CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/9.0',
+        CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/10.0',
         CURLOPT_HTTPHEADER => [
             'Accept: application/geo+json, application/json, text/html, */*;q=0.8',
             'Accept-Language: es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -321,7 +321,7 @@ function pedirProxy(string $targetUrl, array &$stats, int $timeout = 30): ?array
 }
 
 // ============================================================
-// 🚀 DETECCIÓN AUTOMÁTICA DE CAPAS (CORREGIDA)
+// DETECCIÓN AUTOMÁTICA DE CAPAS
 // ============================================================
 function detectarCapasAutomaticamente(array &$stats): array {
     $stats['debug'][] = "🔍 Detectando capas automáticamente del mapa #" . UMAP_MAP_ID;
@@ -329,10 +329,7 @@ function detectarCapasAutomaticamente(array &$stats): array {
     $capasDetectadas = [];
     $metodosIntentados = [];
     
-    // ============================================================
     // MÉTODO 1: Obtener el mapa completo en formato JSON
-    // Endpoint: /es/map/_/ID?format=json
-    // ============================================================
     $metodosIntentados[] = 'map_json';
     $mapJsonUrl = "https://umap.openstreetmap.fr/es/map/_/" . UMAP_MAP_ID . "?format=json";
     $stats['debug'][] = "  ↳ Intentando (M1): $mapJsonUrl";
@@ -349,10 +346,7 @@ function detectarCapasAutomaticamente(array &$stats): array {
         }
     }
     
-    // ============================================================
     // MÉTODO 2: Endpoint datalayers de la API
-    // Endpoint: /api/0.1/map/ID/datalayers/
-    // ============================================================
     if (empty($capasDetectadas)) {
         $metodosIntentados[] = 'api_datalayers';
         $datalayersUrl = "https://umap.openstreetmap.fr/api/0.1/map/" . UMAP_MAP_ID . "/datalayers/";
@@ -371,10 +365,7 @@ function detectarCapasAutomaticamente(array &$stats): array {
         }
     }
     
-    // ============================================================
     // MÉTODO 3: GeoJSON completo del mapa
-    // Endpoint: /es/map/_/ID/geojson/
-    // ============================================================
     if (empty($capasDetectadas)) {
         $metodosIntentados[] = 'geojson_completo';
         $geojsonUrl = "https://umap.openstreetmap.fr/es/map/_/" . UMAP_MAP_ID . "/geojson/";
@@ -393,10 +384,7 @@ function detectarCapasAutomaticamente(array &$stats): array {
         }
     }
     
-    // ============================================================
     // MÉTODO 4: Obtener del mapa usando el endpoint con slug
-    // Endpoint: /es/map/rutaslapaz_1451289?format=json
-    // ============================================================
     if (empty($capasDetectadas)) {
         $metodosIntentados[] = 'map_slug';
         $slugUrl = "https://umap.openstreetmap.fr/es/map/rutaslapaz_" . UMAP_MAP_ID . "?format=json";
@@ -415,9 +403,7 @@ function detectarCapasAutomaticamente(array &$stats): array {
         }
     }
     
-    // ============================================================
     // MÉTODO 5: Obtener del mapa usando el endpoint con slug en inglés
-    // ============================================================
     if (empty($capasDetectadas)) {
         $metodosIntentados[] = 'map_slug_en';
         $slugEnUrl = "https://umap.openstreetmap.fr/en/map/rutaslapaz_" . UMAP_MAP_ID . "?format=json";
@@ -436,9 +422,7 @@ function detectarCapasAutomaticamente(array &$stats): array {
         }
     }
     
-    // ============================================================
     // MÉTODO 6: Último fallback - IDs predefinidos
-    // ============================================================
     if (empty($capasDetectadas)) {
         $metodosIntentados[] = 'predefinidos';
         $stats['debug'][] = "  ↳ Fallback final (M6): usando IDs predefinidos...";
@@ -486,7 +470,7 @@ function descargarCapaMultiNivel(string $capaId, array &$stats): ?array {
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_TIMEOUT => 30,
             CURLOPT_SSL_VERIFYPEER => false,
-            CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/9.0',
+            CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/10.0',
             CURLOPT_HTTPHEADER => [
                 'X-Proxy-Forward-Cookie: ' . UMAP_TOKEN,
                 'Accept: application/geo+json, application/json',
@@ -584,12 +568,291 @@ function limpiar_nombre_lugar(string $nombre): string {
 }
 
 // =========================================================================
-// EJECUCIÓN PRINCIPAL - CON MANEJO CORRECTO DE TRANSACCIONES
+// FUNCIÓN PARA EJECUTAR TRANSACCIÓN DE FORMA SEGURA
 // =========================================================================
-$transactionStarted = false;
+function ejecutarTransaccionSegura(PDO $pdo, array &$stats, array $capasConDatos): bool {
+    global $stmtLugarUpsert, $stmtRutaUpsert, $stmtParadaUpsert;
+    
+    $idLugaresPorGrupo = [];
+    $stats['transaction_active'] = true;
+    
+    try {
+        $pdo->beginTransaction();
+        $stats['debug'][] = "🔓 Transacción iniciada";
+        
+        $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
+        $pdo->exec("TRUNCATE TABLE ruta_parada");
+        $pdo->exec("TRUNCATE TABLE ruta_lugar");
+        $pdo->exec("DELETE FROM ruta");
+        $pdo->exec("ALTER TABLE ruta AUTO_INCREMENT = 1");
+        $pdo->exec("DELETE FROM lugar_turistico");
+        $pdo->exec("ALTER TABLE lugar_turistico AUTO_INCREMENT = 1");
+        $pdo->exec("DELETE FROM parada");
+        $pdo->exec("ALTER TABLE parada AUTO_INCREMENT = 1");
+        $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
+        $stats['debug'][] = "🧹 Tablas limpiadas correctamente";
+        
+        // PREPARAR STATEMENTS CON UPSERT
+        $stmtLugarUpsert = $pdo->prepare("
+            INSERT INTO lugar_turistico (
+                nombre, descripcion, latitud, longitud, categoria, 
+                grupo_umap, id_umap, icono_umap, color_hex, uuid_capa, activo
+            ) VALUES (
+                :nombre, :descripcion, :latitud, :longitud, :categoria,
+                :grupo_umap, :id_umap, :icono_umap, :color_hex, :uuid_capa, 1
+            ) ON DUPLICATE KEY UPDATE
+                nombre = VALUES(nombre),
+                descripcion = VALUES(descripcion),
+                categoria = VALUES(categoria),
+                grupo_umap = VALUES(grupo_umap),
+                icono_umap = COALESCE(VALUES(icono_umap), icono_umap),
+                color_hex = COALESCE(VALUES(color_hex), color_hex),
+                uuid_capa = VALUES(uuid_capa),
+                activo = 1,
+                updated_at = NOW()
+        ");
+        
+        $stmtRutaUpsert = $pdo->prepare("
+            INSERT INTO ruta (
+                nombre, descripcion, tipo, color_hex, sentido, 
+                id_grupo_umap, coords_geojson, uuid_capa, activo
+            ) VALUES (
+                :nombre, :descripcion, :tipo, :color_hex, :sentido,
+                :id_grupo_umap, :coords_geojson, :uuid_capa, 1
+            ) ON DUPLICATE KEY UPDATE
+                nombre = VALUES(nombre),
+                descripcion = VALUES(descripcion),
+                tipo = VALUES(tipo),
+                color_hex = VALUES(color_hex),
+                sentido = VALUES(sentido),
+                id_grupo_umap = VALUES(id_grupo_umap),
+                coords_geojson = VALUES(coords_geojson),
+                activo = 1,
+                updated_at = NOW()
+        ");
+        
+        $stmtParadaUpsert = $pdo->prepare("
+            INSERT INTO parada (nombre, latitud, longitud, id_umap, activo)
+            VALUES (:nombre, :latitud, :longitud, :id_umap, 1)
+            ON DUPLICATE KEY UPDATE
+                nombre = VALUES(nombre),
+                id_umap = VALUES(id_umap),
+                activo = 1,
+                updated_at = NOW()
+        ");
+        
+        // PROCESAR CADA CAPA
+        foreach ($capasConDatos as $info) {
+            $uuid = $info['uuid'];
+            $nombreCapa = $info['nombre'];
+            $geojson = $info['geojson'];
+            $features = $geojson['features'] ?? [];
+            $metodo = $stats['metodo_usado'][$uuid] ?? '?';
+            
+            $stats['debug'][] = "🔨 Procesando capa: $nombreCapa → " . count($features) . " features";
+            
+            $grupoCapa = limpiar_nombre_lugar($nombreCapa);
+            if (empty($grupoCapa)) $grupoCapa = $nombreCapa;
+            
+            $sentido = detectar_sentido($nombreCapa);
+            $colorRuta = ($sentido === 'VUELTA') ? '#2980B9' : '#E74C3C';
+            $tipoRuta = detectar_tipo_ruta($nombreCapa);
+            $idRutaActual = null;
+            
+            foreach ($features as $idx => $feature) {
+                $gtype = $feature['geometry']['type'] ?? '';
+                $coords = $feature['geometry']['coordinates'] ?? [];
+                $props  = $feature['properties'] ?? [];
+                
+                // ---- PUNTO (Lugar Turístico) ----
+                if ($gtype === 'Point' && !empty($coords) && count($coords) >= 2) {
+                    $lat = (float)($coords[1] ?? 0);
+                    $lng = (float)($coords[0] ?? 0);
+                    if ($lat === 0.0 || $lng === 0.0) continue;
+                    
+                    $nombrePunto = trim($props['name'] ?? '') ?: $grupoCapa;
+                    $nombrePunto = limpiar_nombre_lugar($nombrePunto);
+                    if (empty($nombrePunto)) $nombrePunto = $grupoCapa;
+                    
+                    $descripcion = $props['description'] ?? '';
+                    $categoria = $props['categoria'] ?? $props['category'] ?? null;
+                    
+                    $iconoUmap = null;
+                    $colorUmap = null;
+                    if (!empty($props['_umap_options'])) {
+                        $iconoUmap = $props['_umap_options']['iconUrl'] ?? $props['_umap_options']['icon'] ?? null;
+                        $colorUmap = $props['_umap_options']['color'] ?? null;
+                    }
+                    if (!empty($props['icon'])) $iconoUmap = $iconoUmap ?? $props['icon'];
+                    if (!empty($props['marker-color'])) $colorUmap = $colorUmap ?? $props['marker-color'];
+                    if (!empty($props['stroke'])) $colorUmap = $colorUmap ?? $props['stroke'];
+                    
+                    $stmtLugarUpsert->execute([
+                        ':nombre' => $nombrePunto,
+                        ':descripcion' => $descripcion,
+                        ':latitud' => $lat,
+                        ':longitud' => $lng,
+                        ':categoria' => $categoria,
+                        ':grupo_umap' => $grupoCapa,
+                        ':id_umap' => $uuid,
+                        ':icono_umap' => $iconoUmap,
+                        ':color_hex' => $colorUmap,
+                        ':uuid_capa' => $uuid,
+                    ]);
+                    
+                    $selId = $pdo->prepare("SELECT id_lugar FROM lugar_turistico 
+                        WHERE ABS(latitud - ?) < 0.00001 AND ABS(longitud - ?) < 0.00001 LIMIT 1");
+                    $selId->execute([$lat, $lng]);
+                    $idLugar = $selId->fetchColumn();
+                    
+                    if ($idLugar) {
+                        $idLugaresPorGrupo[$grupoCapa] = $idLugar;
+                        if ($stmtLugarUpsert->rowCount() > 0) {
+                            $stats['lugares_insert']++;
+                        } else {
+                            $stats['lugares_update']++;
+                        }
+                    }
+                }
+                
+                // ---- LÍNEA (Ruta) ----
+                if ($gtype === 'LineString' && count($coords) >= 2) {
+                    $color = $colorRuta;
+                    if (!empty($props['_umap_options']['color'])) {
+                        $color = $props['_umap_options']['color'];
+                    } elseif (!empty($props['stroke'])) {
+                        $color = $props['stroke'];
+                    }
+                    $coordsJson = json_encode($coords, JSON_UNESCAPED_UNICODE);
+                    
+                    $stmtRutaUpsert->execute([
+                        ':nombre' => $nombreCapa,
+                        ':descripcion' => $props['description'] ?? '',
+                        ':tipo' => $tipoRuta,
+                        ':color_hex' => $color,
+                        ':sentido' => $sentido,
+                        ':id_grupo_umap' => $grupoCapa,
+                        ':coords_geojson' => $coordsJson,
+                        ':uuid_capa' => $uuid,
+                    ]);
+                    
+                    $selRuta = $pdo->prepare("SELECT id_ruta FROM ruta WHERE uuid_capa = ? LIMIT 1");
+                    $selRuta->execute([$uuid]);
+                    $idRutaActual = $selRuta->fetchColumn();
+                    
+                    if (!$idRutaActual) {
+                        $idRutaActual = $pdo->lastInsertId();
+                    }
+                    
+                    if ($idRutaActual) {
+                        if ($stmtRutaUpsert->rowCount() > 0) {
+                            $stats['rutas_insert']++;
+                        } else {
+                            $stats['rutas_update']++;
+                        }
+                    }
+                    
+                    // Generar paradas y ruta_parada
+                    if ($idRutaActual) {
+                        $orden = 1;
+                        $totalParadas = count($coords);
+                        foreach ($coords as $coord) {
+                            $lat = (float)($coord[1] ?? 0);
+                            $lng = (float)($coord[0] ?? 0);
+                            if ($lat === 0.0 || $lng === 0.0) continue;
+                            
+                            $nomParada = 'Parada ' . $orden . ' - ' . $grupoCapa;
+                            $stmtParadaUpsert->execute([
+                                ':nombre' => $nomParada,
+                                ':latitud' => $lat,
+                                ':longitud' => $lng,
+                                ':id_umap' => $uuid,
+                            ]);
+                            
+                            $selParada = $pdo->prepare("SELECT id_parada FROM parada 
+                                WHERE ABS(latitud - ?) < 0.00001 AND ABS(longitud - ?) < 0.00001 LIMIT 1");
+                            $selParada->execute([$lat, $lng]);
+                            $idParada = $selParada->fetchColumn();
+                            
+                            if ($idParada) {
+                                if ($stmtParadaUpsert->rowCount() > 0) {
+                                    $stats['paradas_insert']++;
+                                } else {
+                                    $stats['paradas_skip']++;
+                                }
+                                
+                                $esInicio = ($orden === 1) ? 1 : 0;
+                                $esFin    = ($orden === $totalParadas) ? 1 : 0;
+                                $insRP = $pdo->prepare("INSERT IGNORE INTO ruta_parada
+                                    (id_ruta, id_parada, orden, es_inicio, es_fin) VALUES (?,?,?,?,?)");
+                                $insRP->execute([$idRutaActual, $idParada, $orden, $esInicio, $esFin]);
+                                $stats['ruta_parada_ok']++;
+                            }
+                            $orden++;
+                        }
+                    }
+                }
+            }
+            
+            // Asociar ruta ↔ lugar turístico
+            if ($idRutaActual !== null) {
+                $grupos = array_unique([$grupoCapa]);
+                $parentesis = extraer_grupo_parentesis($nombreCapa);
+                foreach ($parentesis as $g) {
+                    if (trim($g) !== '') $grupos[] = trim($g);
+                }
+                
+                foreach ($grupos as $g) {
+                    $g = trim($g);
+                    if ($g === '') continue;
+                    
+                    $sel = $pdo->prepare("SELECT id_lugar FROM lugar_turistico
+                        WHERE grupo_umap LIKE ? OR nombre LIKE ? LIMIT 1");
+                    $sel->execute(["%$g%", "%$g%"]);
+                    $idLugar = $sel->fetchColumn();
+                    
+                    if (!$idLugar && isset($idLugaresPorGrupo[$g])) {
+                        $idLugar = $idLugaresPorGrupo[$g];
+                    }
+                    
+                    if ($idLugar) {
+                        $insRL = $pdo->prepare("INSERT IGNORE INTO ruta_lugar
+                            (id_ruta, id_lugar, orden) VALUES (?,?,?)");
+                        $insRL->execute([$idRutaActual, $idLugar, 1]);
+                        $stats['ruta_lugar_ok']++;
+                    }
+                }
+            }
+        }
+        
+        // ✅ COMMIT DE LA TRANSACCIÓN
+        $pdo->commit();
+        $stats['transaction_active'] = false;
+        $stats['debug'][] = "💾 Transacción COMMIT confirmada";
+        return true;
+        
+    } catch (Throwable $e) {
+        // ✅ ROLLBACK SEGURO - solo si la transacción está activa
+        if ($stats['transaction_active']) {
+            try {
+                if ($pdo->inTransaction()) {
+                    $pdo->rollBack();
+                    $stats['debug'][] = "🔙 Transacción ROLLBACK ejecutado";
+                }
+            } catch (Throwable $rollbackError) {
+                $stats['warnings'][] = '⚠️ Error en rollback: ' . $rollbackError->getMessage();
+            }
+            $stats['transaction_active'] = false;
+        }
+        throw $e;
+    }
+}
 
+// =========================================================================
+// EJECUCIÓN PRINCIPAL
+// =========================================================================
 try {
-    $stats['debug'][] = "🚀 Iniciando sincronización v9.0-auto-discovery-fixed → uMap#" . UMAP_MAP_ID;
+    $stats['debug'][] = "🚀 Iniciando sincronización v10.0-transaction-robust → uMap#" . UMAP_MAP_ID;
     
     // ============================================================
     // PASO 1: DETECTAR CAPAS AUTOMÁTICAMENTE
@@ -642,268 +905,13 @@ try {
     }
     
     // ============================================================
-    // PASO 4: INICIAR TRANSACCIÓN Y PROCESAR DATOS
+    // PASO 4: EJECUTAR TRANSACCIÓN DE FORMA SEGURA
     // ============================================================
-    $pdo->beginTransaction();
-    $transactionStarted = true;
-    $stats['transaction_started'] = true;
-    $stats['debug'][] = "🔓 Transacción iniciada";
+    $transaccionExitosa = ejecutarTransaccionSegura($pdo, $stats, $capasConDatos);
     
-    $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
-    $pdo->exec("TRUNCATE TABLE ruta_parada");
-    $pdo->exec("TRUNCATE TABLE ruta_lugar");
-    $pdo->exec("DELETE FROM ruta");
-    $pdo->exec("ALTER TABLE ruta AUTO_INCREMENT = 1");
-    $pdo->exec("DELETE FROM lugar_turistico");
-    $pdo->exec("ALTER TABLE lugar_turistico AUTO_INCREMENT = 1");
-    $pdo->exec("DELETE FROM parada");
-    $pdo->exec("ALTER TABLE parada AUTO_INCREMENT = 1");
-    $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
-    $stats['debug'][] = "🧹 Tablas limpiadas correctamente";
-    
-    $idLugaresPorGrupo = [];
-    
-    // ============================================================
-    // PREPARAR STATEMENTS CON UPSERT
-    // ============================================================
-    $stmtLugarUpsert = $pdo->prepare("
-        INSERT INTO lugar_turistico (
-            nombre, descripcion, latitud, longitud, categoria, 
-            grupo_umap, id_umap, icono_umap, color_hex, uuid_capa, activo
-        ) VALUES (
-            :nombre, :descripcion, :latitud, :longitud, :categoria,
-            :grupo_umap, :id_umap, :icono_umap, :color_hex, :uuid_capa, 1
-        ) ON DUPLICATE KEY UPDATE
-            nombre = VALUES(nombre),
-            descripcion = VALUES(descripcion),
-            categoria = VALUES(categoria),
-            grupo_umap = VALUES(grupo_umap),
-            icono_umap = COALESCE(VALUES(icono_umap), icono_umap),
-            color_hex = COALESCE(VALUES(color_hex), color_hex),
-            uuid_capa = VALUES(uuid_capa),
-            activo = 1,
-            updated_at = NOW()
-    ");
-    
-    $stmtRutaUpsert = $pdo->prepare("
-        INSERT INTO ruta (
-            nombre, descripcion, tipo, color_hex, sentido, 
-            id_grupo_umap, coords_geojson, uuid_capa, activo
-        ) VALUES (
-            :nombre, :descripcion, :tipo, :color_hex, :sentido,
-            :id_grupo_umap, :coords_geojson, :uuid_capa, 1
-        ) ON DUPLICATE KEY UPDATE
-            nombre = VALUES(nombre),
-            descripcion = VALUES(descripcion),
-            tipo = VALUES(tipo),
-            color_hex = VALUES(color_hex),
-            sentido = VALUES(sentido),
-            id_grupo_umap = VALUES(id_grupo_umap),
-            coords_geojson = VALUES(coords_geojson),
-            activo = 1,
-            updated_at = NOW()
-    ");
-    
-    $stmtParadaUpsert = $pdo->prepare("
-        INSERT INTO parada (nombre, latitud, longitud, id_umap, activo)
-        VALUES (:nombre, :latitud, :longitud, :id_umap, 1)
-        ON DUPLICATE KEY UPDATE
-            nombre = VALUES(nombre),
-            id_umap = VALUES(id_umap),
-            activo = 1,
-            updated_at = NOW()
-    ");
-    
-    // ============================================================
-    // PROCESAR CADA CAPA
-    // ============================================================
-    foreach ($capasConDatos as $info) {
-        $uuid = $info['uuid'];
-        $nombreCapa = $info['nombre'];
-        $geojson = $info['geojson'];
-        $features = $geojson['features'] ?? [];
-        $metodo = $stats['metodo_usado'][$uuid] ?? '?';
-        
-        $stats['debug'][] = "🔨 Procesando capa: $nombreCapa → " . count($features) . " features";
-        
-        $grupoCapa = limpiar_nombre_lugar($nombreCapa);
-        if (empty($grupoCapa)) $grupoCapa = $nombreCapa;
-        
-        $sentido = detectar_sentido($nombreCapa);
-        $colorRuta = ($sentido === 'VUELTA') ? '#2980B9' : '#E74C3C';
-        $tipoRuta = detectar_tipo_ruta($nombreCapa);
-        $idRutaActual = null;
-        
-        foreach ($features as $idx => $feature) {
-            $gtype = $feature['geometry']['type'] ?? '';
-            $coords = $feature['geometry']['coordinates'] ?? [];
-            $props  = $feature['properties'] ?? [];
-            
-            // ---- PUNTO (Lugar Turístico) ----
-            if ($gtype === 'Point' && !empty($coords) && count($coords) >= 2) {
-                $lat = (float)($coords[1] ?? 0);
-                $lng = (float)($coords[0] ?? 0);
-                if ($lat === 0.0 || $lng === 0.0) continue;
-                
-                $nombrePunto = trim($props['name'] ?? '') ?: $grupoCapa;
-                $nombrePunto = limpiar_nombre_lugar($nombrePunto);
-                if (empty($nombrePunto)) $nombrePunto = $grupoCapa;
-                
-                $descripcion = $props['description'] ?? '';
-                $categoria = $props['categoria'] ?? $props['category'] ?? null;
-                
-                $iconoUmap = null;
-                $colorUmap = null;
-                if (!empty($props['_umap_options'])) {
-                    $iconoUmap = $props['_umap_options']['iconUrl'] ?? $props['_umap_options']['icon'] ?? null;
-                    $colorUmap = $props['_umap_options']['color'] ?? null;
-                }
-                if (!empty($props['icon'])) $iconoUmap = $iconoUmap ?? $props['icon'];
-                if (!empty($props['marker-color'])) $colorUmap = $colorUmap ?? $props['marker-color'];
-                if (!empty($props['stroke'])) $colorUmap = $colorUmap ?? $props['stroke'];
-                
-                $stmtLugarUpsert->execute([
-                    ':nombre' => $nombrePunto,
-                    ':descripcion' => $descripcion,
-                    ':latitud' => $lat,
-                    ':longitud' => $lng,
-                    ':categoria' => $categoria,
-                    ':grupo_umap' => $grupoCapa,
-                    ':id_umap' => $uuid,
-                    ':icono_umap' => $iconoUmap,
-                    ':color_hex' => $colorUmap,
-                    ':uuid_capa' => $uuid,
-                ]);
-                
-                $selId = $pdo->prepare("SELECT id_lugar FROM lugar_turistico 
-                    WHERE ABS(latitud - ?) < 0.00001 AND ABS(longitud - ?) < 0.00001 LIMIT 1");
-                $selId->execute([$lat, $lng]);
-                $idLugar = $selId->fetchColumn();
-                
-                if ($idLugar) {
-                    $idLugaresPorGrupo[$grupoCapa] = $idLugar;
-                    if ($stmtLugarUpsert->rowCount() > 0) {
-                        $stats['lugares_insert']++;
-                    } else {
-                        $stats['lugares_update']++;
-                    }
-                }
-            }
-            
-            // ---- LÍNEA (Ruta) ----
-            if ($gtype === 'LineString' && count($coords) >= 2) {
-                $color = $colorRuta;
-                if (!empty($props['_umap_options']['color'])) {
-                    $color = $props['_umap_options']['color'];
-                } elseif (!empty($props['stroke'])) {
-                    $color = $props['stroke'];
-                }
-                $coordsJson = json_encode($coords, JSON_UNESCAPED_UNICODE);
-                
-                $stmtRutaUpsert->execute([
-                    ':nombre' => $nombreCapa,
-                    ':descripcion' => $props['description'] ?? '',
-                    ':tipo' => $tipoRuta,
-                    ':color_hex' => $color,
-                    ':sentido' => $sentido,
-                    ':id_grupo_umap' => $grupoCapa,
-                    ':coords_geojson' => $coordsJson,
-                    ':uuid_capa' => $uuid,
-                ]);
-                
-                $selRuta = $pdo->prepare("SELECT id_ruta FROM ruta WHERE uuid_capa = ? LIMIT 1");
-                $selRuta->execute([$uuid]);
-                $idRutaActual = $selRuta->fetchColumn();
-                
-                if (!$idRutaActual) {
-                    $idRutaActual = $pdo->lastInsertId();
-                }
-                
-                if ($idRutaActual) {
-                    if ($stmtRutaUpsert->rowCount() > 0) {
-                        $stats['rutas_insert']++;
-                    } else {
-                        $stats['rutas_update']++;
-                    }
-                }
-                
-                // Generar paradas y ruta_parada
-                if ($idRutaActual) {
-                    $orden = 1;
-                    $totalParadas = count($coords);
-                    foreach ($coords as $coord) {
-                        $lat = (float)($coord[1] ?? 0);
-                        $lng = (float)($coord[0] ?? 0);
-                        if ($lat === 0.0 || $lng === 0.0) continue;
-                        
-                        $nomParada = 'Parada ' . $orden . ' - ' . $grupoCapa;
-                        $stmtParadaUpsert->execute([
-                            ':nombre' => $nomParada,
-                            ':latitud' => $lat,
-                            ':longitud' => $lng,
-                            ':id_umap' => $uuid,
-                        ]);
-                        
-                        $selParada = $pdo->prepare("SELECT id_parada FROM parada 
-                            WHERE ABS(latitud - ?) < 0.00001 AND ABS(longitud - ?) < 0.00001 LIMIT 1");
-                        $selParada->execute([$lat, $lng]);
-                        $idParada = $selParada->fetchColumn();
-                        
-                        if ($idParada) {
-                            if ($stmtParadaUpsert->rowCount() > 0) {
-                                $stats['paradas_insert']++;
-                            } else {
-                                $stats['paradas_skip']++;
-                            }
-                            
-                            $esInicio = ($orden === 1) ? 1 : 0;
-                            $esFin    = ($orden === $totalParadas) ? 1 : 0;
-                            $insRP = $pdo->prepare("INSERT IGNORE INTO ruta_parada
-                                (id_ruta, id_parada, orden, es_inicio, es_fin) VALUES (?,?,?,?,?)");
-                            $insRP->execute([$idRutaActual, $idParada, $orden, $esInicio, $esFin]);
-                            $stats['ruta_parada_ok']++;
-                        }
-                        $orden++;
-                    }
-                }
-            }
-        }
-        
-        // Asociar ruta ↔ lugar turístico
-        if ($idRutaActual !== null) {
-            $grupos = array_unique([$grupoCapa]);
-            $parentesis = extraer_grupo_parentesis($nombreCapa);
-            foreach ($parentesis as $g) {
-                if (trim($g) !== '') $grupos[] = trim($g);
-            }
-            
-            foreach ($grupos as $g) {
-                $g = trim($g);
-                if ($g === '') continue;
-                
-                $sel = $pdo->prepare("SELECT id_lugar FROM lugar_turistico
-                    WHERE grupo_umap LIKE ? OR nombre LIKE ? LIMIT 1");
-                $sel->execute(["%$g%", "%$g%"]);
-                $idLugar = $sel->fetchColumn();
-                
-                if (!$idLugar && isset($idLugaresPorGrupo[$g])) {
-                    $idLugar = $idLugaresPorGrupo[$g];
-                }
-                
-                if ($idLugar) {
-                    $insRL = $pdo->prepare("INSERT IGNORE INTO ruta_lugar
-                        (id_ruta, id_lugar, orden) VALUES (?,?,?)");
-                    $insRL->execute([$idRutaActual, $idLugar, 1]);
-                    $stats['ruta_lugar_ok']++;
-                }
-            }
-        }
+    if (!$transaccionExitosa) {
+        throw new RuntimeException("❌ La transacción falló");
     }
-    
-    // ✅ COMMIT DE LA TRANSACCIÓN
-    $pdo->commit();
-    $transactionStarted = false;
-    $stats['debug'][] = "💾 Transacción COMMIT confirmada";
     
     // ============================================================
     // PASO 5: RESPUESTA FINAL
@@ -935,7 +943,7 @@ try {
         'success' => ($status !== 'ERROR'),
         'status'  => $status,
         'map_id'  => UMAP_MAP_ID,
-        'version' => '9.0-auto-discovery-fixed',
+        'version' => '10.0-transaction-robust',
         'metodo_descarga_principal' => $metodoPrincipal,
         'worker_used' => strpos($metodoPrincipal, 'L1-worker') !== false,
         'worker_url' => UMAP_PROXY_WORKER,
@@ -977,15 +985,13 @@ try {
     echo json_encode($response, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
     
 } catch (Throwable $e) {
-    // ✅ MANEJO CORRECTO DE TRANSACCIONES
-    if ($transactionStarted) {
+    // 🔒 ROLLBACK DE SEGURIDAD (por si quedó alguna transacción abierta)
+    if (isset($pdo) && $pdo->inTransaction()) {
         try {
-            if (isset($pdo) && $pdo->inTransaction()) {
-                $pdo->rollBack();
-                $stats['debug'][] = "🔙 Transacción ROLLBACK ejecutado";
-            }
+            $pdo->rollBack();
+            $stats['debug'][] = "🔙 Rollback de seguridad ejecutado";
         } catch (Throwable $rollbackError) {
-            $stats['warnings'][] = '⚠️ Error en rollback: ' . $rollbackError->getMessage();
+            // Silenciar errores de rollback
         }
     }
     
