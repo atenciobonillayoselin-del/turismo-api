@@ -9,7 +9,7 @@
  * ✅ Compatible con Aiven (sin GET_LOCK)
  * 
  * @package TurismoLaPaz
- * @version 21.0-public-api-no-lock
+ * @version 22.0 - CAPAS ACTUALIZADAS
  */
 
 error_reporting(E_ALL);
@@ -36,7 +36,7 @@ $DB_NAME = getenv('PDO_DATABASE') ?: 'defaultdb';
 $DB_USER = getenv('PDO_USERNAME') ?: 'avnadmin';
 $DB_PASS = getenv('PDO_PASSWORD') ?: '';
 
-define('UMAP_MAP_ID', 1451289);
+define('UMAP_MAP_ID', 1447967); // ✅ ID CORRECTO de tu mapa
 define('UMAP_TIMEOUT', 40);
 define('CACHE_DIR', dirname(__DIR__) . '/data/umap_cache');
 define('CACHE_MAX_AGE_SECONDS', 60 * 60);
@@ -54,15 +54,27 @@ define('GITHUB_WAIT_SECONDS', (int)(getenv('GITHUB_WAIT_SECONDS') ?: 90));
 
 $ALLOW_TRIGGER_GHA = !empty($_GET['force_gha']) || !empty($_GET['refresh']);
 
-// UUIDs de fallback (solo si uMap no responde)
+// ============================================================
+// ✅ CAPAS ACTUALIZADAS - TUS LUGARES TURÍSTICOS
+// ============================================================
+// GRUPOS = NOMBRES DE LUGARES TURÍSTICOS
+// CAPAS = RUTAS DE MINIBUS
+// ============================================================
 $FALLBACK_UUIDS = [
-    '8bfdeb7b-421c-4ff6-9643-53c75c3a88bc' => 'Minibus 254 - IDA',
-    '1131cb1a-631f-4d7b-8f33-f46a469366f9' => 'Minibus 254 - VUELTA',
-    '34f4c3be-3ec9-400b-9b82-c3be983df2dd' => 'Minibus 204 - IDA',
-    'ce66785e-ee35-4de4-b5d8-3ab0d57e1e47' => 'Minibus 889 - IDA',
-    'fa904f68-9ee2-4e12-b3a4-8406f357def5' => 'Minibus 889 - VUELTA',
-    '0a5a5bfc-8c95-4fea-8400-3a8438a2b533' => 'Minibus 364 - IDA',
-    '291c212e-44db-4460-b84e-773bcfede107' => 'Minibus 364 - VUELTA',
+    // MIRADOR MONTÍCULO (Minibus 254)
+    '8bfdeb7b-421c-4ff6-9643-53c75c3a88bc' => 'Minibus 254 - IDA (Mirador Montículo)',
+    '1131cb1a-631f-4d7b-8f33-f46a469366f9' => 'Minibus 254 - VUELTA (Mirador Montículo)',
+    
+    // MIRADOR KILLI KILLI (Minibus 204)
+    '34f4c3be-3ec9-400b-9b82-c3be983df2dd' => 'Minibus 204 - IDA (Mirador Killi Killi)',
+    
+    // PLAZA VILLARROEL (Minibus 889)
+    'ce66785e-ee35-4de4-b5d8-3ab0d57e1e47' => 'Minibus 889 - IDA (Plaza Villarroel)',
+    'fa904f68-9ee2-4e12-b3a4-8406f357def5' => 'Minibus 889 - VUELTA (Plaza Villarroel)',
+    
+    // PARQUE LAIKAKOTA (Minibus 364)
+    '0a5a5bfc-8c95-4fea-8400-3a8438a2b533' => 'Minibus 364 - IDA (Parque Laikakota)',
+    '291c212e-44db-4460-b84e-773bcfede107' => 'Minibus 364 - VUELTA (Parque Laikakota)',
 ];
 
 if (empty($DB_PASS)) {
@@ -312,7 +324,6 @@ function parseJsonIfValid(?string $raw): ?array {
     }
     $raw = trim($raw);
     
-    // Verificar si es HTML
     if (stripos($raw, '<!DOCTYPE') === 0 || stripos($raw, '<html') === 0) {
         return null;
     }
@@ -341,7 +352,7 @@ function pedirProxy(string $targetUrl, array &$stats, int $timeout = 30): ?array
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT => $timeout,
         CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/21.0',
+        CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/22.0',
         CURLOPT_HTTPHEADER => [
             'Accept: application/geo+json, application/json, text/html, */*;q=0.8',
             'Accept-Language: es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -362,7 +373,6 @@ function pedirProxy(string $targetUrl, array &$stats, int $timeout = 30): ?array
         }
         $resp = trim($resp);
         
-        // Verificar si es HTML
         if (stripos($resp, '<!DOCTYPE') === 0 || stripos($resp, '<html') === 0) {
             $stats['debug'][] = "  ↳ ⚠️ La respuesta es HTML, no JSON. Usando siguiente método.";
             return null;
@@ -381,35 +391,7 @@ function pedirProxy(string $targetUrl, array &$stats, int $timeout = 30): ?array
 }
 
 // ============================================================
-// FUNCIÓN HTTP GET SIMPLE
-// ============================================================
-function httpGet(string $url, int $timeout = 15): ?string {
-    $ch = curl_init($url);
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => $timeout,
-        CURLOPT_CONNECTTIMEOUT => 10,
-        CURLOPT_FOLLOWLOCATION => true,
-        CURLOPT_MAXREDIRS => 3,
-        CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/21.0',
-        CURLOPT_HTTPHEADER => [
-            'Accept: application/json, text/html, */*',
-            'Accept-Language: es-ES,es;q=0.9',
-        ],
-    ]);
-    $resp = curl_exec($ch);
-    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-    
-    if ($code === 200 && $resp) {
-        return $resp;
-    }
-    return null;
-}
-
-// ============================================================
-// DETECCIÓN DE CAPAS - SOLO API PÚBLICA
+// DETECCIÓN DE CAPAS - VERSIÓN MEJORADA
 // ============================================================
 function detectarCapasAutomaticamente(array &$stats): array {
     global $FALLBACK_UUIDS;
@@ -420,7 +402,7 @@ function detectarCapasAutomaticamente(array &$stats): array {
     $metodoUsado = 'ninguno';
     
     // ============================================================
-    // ✅ ÚNICO MÉTODO: API pública de uMap (NO requiere cookie)
+    // ✅ MÉTODO 1: API pública de uMap
     // ============================================================
     $urlApi = "https://umap.openstreetmap.fr/api/0.1/map/" . UMAP_MAP_ID . "/";
     $stats['debug'][] = "  ↳ Intentando (API pública): $urlApi";
@@ -431,7 +413,6 @@ function detectarCapasAutomaticamente(array &$stats): array {
         $stats['debug'][] = "  📦 JSON válido: YES";
         $stats['debug'][] = "  📦 Keys raíz: " . implode(', ', array_keys($content));
         
-        // Buscar datalayers en la respuesta
         if (isset($content['datalayers']) && is_array($content['datalayers'])) {
             $stats['debug'][] = "  📦 Buscando en datalayers...";
             foreach ($content['datalayers'] as $layer) {
@@ -444,7 +425,6 @@ function detectarCapasAutomaticamente(array &$stats): array {
             }
         }
         
-        // Si las capas están en otro lugar, buscar recursivamente
         if (empty($todasLasCapas)) {
             $stats['debug'][] = "  📦 Buscando recursivamente...";
             $recursiveResult = buscarCapasRecursivamente($content);
@@ -463,29 +443,24 @@ function detectarCapasAutomaticamente(array &$stats): array {
     }
     
     // ============================================================
-    // SI ENCONTRAMOS CAPAS, USARLAS
+    // ✅ MÉTODO 2: Usar lista de FALLBACK si no encontró capas
     // ============================================================
-    if (!empty($todasLasCapas)) {
+    if (empty($todasLasCapas)) {
+        $stats['warnings'][] = "⚠️ Falló la detección desde API pública. Usando lista de resguardo.";
+        $metodoUsado = 'fallback_predefinido';
+        $todasLasCapas = $FALLBACK_UUIDS;
+        
+        foreach ($FALLBACK_UUIDS as $uuid => $nombre) {
+            $stats['debug'][] = "  ✅ Capa de resguardo: $nombre [$uuid]";
+        }
+    } else {
         $metodoUsado = 'api_publica';
         $stats['debug'][] = "  🤖 Detección exitosa desde API pública: " . count($todasLasCapas) . " capas encontradas.";
-        $stats['metodo_deteccion'] = $metodoUsado;
-        $stats['capas_detectadas'] = $todasLasCapas;
-        return $todasLasCapas;
     }
     
-    // ============================================================
-    // FALLBACK
-    // ============================================================
-    $stats['warnings'][] = "⚠️ Falló la detección desde API pública. Usando lista de resguardo.";
-    $metodoUsado = 'fallback_predefinido';
     $stats['metodo_deteccion'] = $metodoUsado;
-    $stats['capas_detectadas'] = $FALLBACK_UUIDS;
-    
-    foreach ($FALLBACK_UUIDS as $uuid => $nombre) {
-        $stats['debug'][] = "  ✅ Capa de resguardo: $nombre [$uuid]";
-    }
-    
-    return $FALLBACK_UUIDS;
+    $stats['capas_detectadas'] = $todasLasCapas;
+    return $todasLasCapas;
 }
 
 function buscarCapasRecursivamente(array $data, string $path = 'root'): array {
@@ -523,7 +498,7 @@ function descargarCapaMultiNivel(string $capaId, array &$stats): ?array {
     $stats['debug'][] = "  📥 Descargando capa: $capaId";
     
     // ============================================================
-    // NIVEL 1: Worker - Múltiples URLs (sin cookie)
+    // NIVEL 1: Worker - Múltiples URLs
     // ============================================================
     $urlsParaProbar = [
         "https://umap.openstreetmap.fr/api/0.1/map/" . UMAP_MAP_ID . "/layer/$capaId/data/",
@@ -585,14 +560,6 @@ function descargarCapaMultiNivel(string $capaId, array &$stats): ?array {
                 return $data;
             }
         }
-    }
-    
-    // ============================================================
-    // NIVEL 5: Trigger GHA (último recurso)
-    // ============================================================
-    if (!empty(GITHUB_REPO) && !empty(GITHUB_TOKEN)) {
-        $stats['debug'][] = "    ↳ Triggering GHA para $capaId...";
-        // Aquí iría la lógica de trigger GHA
     }
     
     $stats['debug'][] = "  ❌ TODOS los métodos fallaron para capa $capaId";
@@ -949,7 +916,7 @@ function ejecutarTransaccionSegura(PDO $pdo, array &$stats, array $capasConDatos
 $lockAdquirido = false;
 
 try {
-    $stats['debug'][] = "🚀 Iniciando sincronización v21.0-public-api-no-lock → uMap#" . UMAP_MAP_ID;
+    $stats['debug'][] = "🚀 Iniciando sincronización v22.0 → uMap#" . UMAP_MAP_ID;
     
     // ADQUIRIR LOCK - DESACTIVADO
     $stats['lock_adquirido'] = true;
@@ -1050,7 +1017,7 @@ try {
         'success' => ($status !== 'ERROR'),
         'status'  => $status,
         'map_id'  => UMAP_MAP_ID,
-        'version' => '21.0-public-api-no-lock',
+        'version' => '22.0',
         'metodo_deteccion' => $stats['metodo_deteccion'] ?? 'desconocido',
         'metodo_descarga_principal' => $metodoPrincipal,
         'worker_used' => strpos($metodoPrincipal, 'L1-worker') !== false,

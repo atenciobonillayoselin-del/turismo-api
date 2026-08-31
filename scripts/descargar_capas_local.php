@@ -2,40 +2,42 @@
 /**
  * scripts/descargar_capas_local.php
  * -------------------------------------------------------------
- * SCRIPT LOCAL DE RESCATE - se ejecuta en TU PC (Laragon, XAMPP, etc.)
- * No bloquea IPs porque usamos TU navegador / tu red doméstica.
+ * SCRIPT LOCAL DE RESCATE - MAPA CORRECTO: rutaslapaz_1447967
  * -------------------------------------------------------------
  * MODO DE USO:
  *   1) php scripts/descargar_capas_local.php
- *   2) php scripts/descargar_capas_local.php --force     (sobrescribe .json)
+ *   2) php scripts/descargar_capas_local.php --force
  *   3) php scripts/descargar_capas_local.php --proxy "https://tu-worker.workers.dev/?url="
  *   4) php scripts/descargar_capas_local.php --cookie "sessionid=xxxxx; csrftoken=yyyy"
- *
- * POSTERIORMENTE:
- *   git add data/umap_cache/*.json
- *   git commit -m "cache(umap): 7 capas descargadas manualmente"
- *   git push origin main
- *
- * El sincronizar.php en Render.com COGERÁ ESTOS .json via NIVEL 5 (GitHub Raw).
  */
 
 declare(strict_types=1);
 
 // ============================================================
-// CONFIGURACIÓN
+// ✅ CONFIGURACIÓN CORREGIDA - MAPA REAL: 1447967
 // ============================================================
-$MAP_ID     = 873950;   // ⚠️ CORRECTO (no 1447967)
+$MAP_ID     = 1447967;   // ✅ MAPA CORRECTO: rutaslapaz_1447967
 $CACHE_DIR  = dirname(__DIR__) . '/data/umap_cache';
 $FORCE      = in_array('--force', $argv, true);
 
+// ============================================================
+// ✅ CAPAS - SOLO LAS QUE QUIERES SUBIR
+// ============================================================
 $CAPAS = [
-    '8bfdeb7b-421c-4ff6-9643-53c75c3a88bc' => 'Minibus 254 - IDA, Mirador Montículo',
-    '1131cb1a-631f-4d7b-8f33-f46a469366f9' => 'Minibus 254 - VUELTA, Mirador Montículo',
-    '34f4c3be-3ec9-400b-9b82-c3be983df2dd' => 'Minibus 204 - IDA, Mirador Killi Killi',
-    'ce66785e-ee35-4de4-b5d8-3ab0d57e1e47' => 'Minibus 889 - IDA, Plaza Villarroel',
-    'fa904f68-9ee2-4e12-b3a4-8406f357def5' => 'Minibus 889 - VUELTA, Plaza Villarroel',
-    '0a5a5bfc-8c95-4fea-8400-3a8438a2b533' => 'Minibus 364 - IDA, Parque Laikakota',
-    '291c212e-44db-4460-b84e-773bcfede107' => 'Minibus 364 - VUELTA, Parque Laikakota',
+    // MIRADOR MONTÍCULO
+    '8bfdeb7b-421c-4ff6-9643-53c75c3a88bc' => 'Minibus 254 - IDA (Mirador Montículo)',
+    '1131cb1a-631f-4d7b-8f33-f46a469366f9' => 'Minibus 254 - VUELTA (Mirador Montículo)',
+    
+    // MIRADOR KILLI KILLI
+    '34f4c3be-3ec9-400b-9b82-c3be983df2dd' => 'Minibus 204 - IDA (Mirador Killi Killi)',
+    
+    // PLAZA VILLARROEL
+    'ce66785e-ee35-4de4-b5d8-3ab0d57e1e47' => 'Minibus 889 - IDA (Plaza Villarroel)',
+    'fa904f68-9ee2-4e12-b3a4-8406f357def5' => 'Minibus 889 - VUELTA (Plaza Villarroel)',
+    
+    // PARQUE LAIKAKOTA
+    '0a5a5bfc-8c95-4fea-8400-3a8438a2b533' => 'Minibus 364 - IDA (Parque Laikakota)',
+    '291c212e-44db-4460-b84e-773bcfede107' => 'Minibus 364 - VUELTA (Parque Laikakota)',
 ];
 
 // ============================================================
@@ -65,13 +67,18 @@ if (!is_dir($CACHE_DIR)) {
     echo "📁 Creado directorio caché: $CACHE_DIR\n";
 }
 
+// ============================================================
+// ✅ USAR LA MISMA URL QUE FUNCIONA EN sincronizar.php
+// ============================================================
 function buildUrls(int $mid, string $cid): array {
     return [
+        // ✅ Esta es la que FUNCIONA (vista en el log de sincronizar.php)
+        "https://umap.openstreetmap.fr/es/datalayer/$mid/$cid/",
+        "https://umap.openstreetmap.fr/en/datalayer/$mid/$cid/",
         "https://umap.openstreetmap.fr/api/0.1/map/$mid/layer/$cid/data/",
         "https://umap.openstreetmap.fr/api/0.1/map/$mid/layer/$cid/data?format=geojson",
         "https://umap.openstreetmap.fr/es/map/_/$mid?data=$cid&format=geojson",
         "https://umap.openstreetmap.fr/en/map/_/$mid?data=$cid&format=geojson",
-        "https://umap.openstreetmap.fr/es/datalayer/$mid/$cid/?format=geojson",
         "https://u.osmfr.org/m/$mid/datalayer/$cid/?format=geojson",
     ];
 }
@@ -88,7 +95,6 @@ function descargar(string $url, string $proxy, string $cookie, array $uas): stri
     global $MAP_ID;
     $target = $url;
     if ($proxy !== '') {
-        // Proxy espera ?url=ENCODED
         $sep = (str_contains($proxy, '?') ? '&' : '?');
         $target = $proxy . urlencode($url);
     }
@@ -109,7 +115,7 @@ function descargar(string $url, string $proxy, string $cookie, array $uas): stri
             'Accept-Language: es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7',
             'Cache-Control: max-age=0',
             'Pragma: no-cache',
-            'Referer: https://umap.openstreetmap.fr/en/map/la-paz-turistico_' . $MAP_ID,
+            'Referer: https://umap.openstreetmap.fr/es/map/rutaslapaz_' . $MAP_ID,
             'Origin: https://umap.openstreetmap.fr',
             'Sec-Fetch-Dest: empty',
             'Sec-Fetch-Mode: cors',
@@ -163,7 +169,10 @@ foreach ($CAPAS as $cid => $nombre) {
             if ($resp !== false && esJsonValidoCapa($resp)) {
                 $ok = file_put_contents($destFile, $resp);
                 if ($ok !== false) {
-                    echo "   ✅ GUARDADO → $cid.json (" . round(strlen($resp)/1024,1) . " KB)\n      Features: " . count(json_decode($resp, true)['features']) . "\n\n";
+                    $features = 0;
+                    $json = json_decode($resp, true);
+                    if (isset($json['features'])) $features = count($json['features']);
+                    echo "   ✅ GUARDADO → $cid.json (" . round(strlen($resp)/1024,1) . " KB, $features features)\n\n";
                     $OK++;
                     $encontrado = true;
                     break 2;
@@ -175,7 +184,7 @@ foreach ($CAPAS as $cid => $nombre) {
     }
 
     if (!$encontrado) {
-        echo "   ❌ CRÍTICO: No se pudo descargar esta capa (¿URL equivocada o cookie inválida?)\n\n";
+        echo "   ❌ CRÍTICO: No se pudo descargar esta capa\n\n";
         $FAIL++;
     }
 }
@@ -187,16 +196,14 @@ echo "\n════════════════════════
 echo "📊 RESUMEN FINAL: OK=$OK / FALLOS=$FAIL / SALTADOS=$SKIP\n";
 
 if ($OK === count($CAPAS)) {
-    echo "\n🎉 TODO DESCARGADO. Ahora subelo a GitHub:\n\n";
-    echo "     git add data/umap_cache/*.json\n";
-    echo "     git commit -m \"cache(umap): 7 capas GeoJSON descargadas localmente\"\n";
-    echo "     git push origin main\n";
-    echo "\n💡 Luego el sincronizar.php de Render usará NIVEL 5 (GitHub Raw) automáticamente.\n";
+    echo "\n🎉 TODO DESCARGADO. Ahora ejecuta sincronizar.php:\n\n";
+    echo "     php api/sincronizar.php\n";
+    echo "\n💡 Esto subirá los datos a tu base de datos Aiven.\n";
     exit(0);
 }
 
 echo "❌ Faltan capas. Soluciones:\n";
 echo "   1) El mapa es PRIVADO? Agrega:  --cookie \"sessionid=XXX; csrftoken=YYY\"\n";
 echo "   2) IP bloqueada? Usa proxy:    --proxy \"https://tu-worker.workers.dev/?url=\"\n";
-echo "   3) Recuerda: MAP_ID correcto = 873950\n";
+echo "   3) Recuerda: MAP_ID correcto = $MAP_ID\n";
 exit(1);
