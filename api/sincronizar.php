@@ -1,9 +1,6 @@
 <?php
 /**
- * sincronizar.php - Sincroniza GeoJSON con MySQL (VERSIÓN CORREGIDA)
- * - Usa uuid_capa correctamente
- * - Guarda nombres legibles
- * - Crea relaciones ruta-lugar automáticamente
+ * sincronizar.php - Sincroniza GeoJSON con MySQL (CON DUPLICATE KEY CORREGIDO)
  */
 
 error_reporting(E_ALL);
@@ -21,9 +18,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-// =========================================================================
-// CONFIGURACIÓN - Variables de entorno
-// =========================================================================
 $DB_HOST = getenv('PDO_HOST') ?: 'mysql-3c89e575-turismo-la-paz.d.aivencloud.com';
 $DB_PORT = getenv('PDO_PORT') ?: 23909;
 $DB_NAME = getenv('PDO_DATABASE') ?: 'app_turistica_la_paz';
@@ -37,9 +31,6 @@ if (!is_dir($CACHE_DIR)) {
     exit;
 }
 
-// =========================================================================
-// ESCANEAR ARCHIVOS
-// =========================================================================
 $archivos = glob($CACHE_DIR . '/*.json');
 
 if (empty($archivos)) {
@@ -47,9 +38,6 @@ if (empty($archivos)) {
     exit;
 }
 
-// =========================================================================
-// CONEXIÓN A BASE DE DATOS
-// =========================================================================
 try {
     $dsn = "mysql:host=$DB_HOST;port=$DB_PORT;dbname=$DB_NAME;charset=utf8mb4";
     $pdo = new PDO($dsn, $DB_USER, $DB_PASS, [
@@ -62,10 +50,6 @@ try {
     echo json_encode(['success' => false, 'error' => '❌ Error de conexión: ' . $e->getMessage()]);
     exit;
 }
-
-// =========================================================================
-// FUNCIONES
-// =========================================================================
 
 function extraerNombreLugar($nombreArchivo, $props = []) {
     $mapeo = [
@@ -108,13 +92,9 @@ function extraerUuid($nombreArchivo) {
     return $nombre;
 }
 
-// =========================================================================
-// EJECUCIÓN
-// =========================================================================
 try {
     $pdo->beginTransaction();
     
-    // Limpiar tablas
     $pdo->exec("SET FOREIGN_KEY_CHECKS = 0");
     $pdo->exec("DELETE FROM ruta_parada");
     $pdo->exec("DELETE FROM ruta_lugar");
@@ -133,20 +113,33 @@ try {
         'errores' => []
     ];
 
-    // ✅ USAMOS uuid_capa (existe en todas las tablas)
+    // ✅ CORREGIDO: Sin placeholders en VALUES
     $stmtLugar = $pdo->prepare("
         INSERT INTO lugar_turistico (nombre, descripcion, latitud, longitud, categoria, uuid_capa, activo)
         VALUES (:nombre, :descripcion, :latitud, :longitud, 'Atracción turística', :uuid, 1)
+        ON DUPLICATE KEY UPDATE 
+            nombre = VALUES(nombre),
+            descripcion = VALUES(descripcion),
+            categoria = VALUES(categoria),
+            activo = 1
     ");
 
     $stmtRuta = $pdo->prepare("
         INSERT INTO ruta (nombre, descripcion, tipo, color_hex, sentido, uuid_capa, activo)
         VALUES (:nombre, :descripcion, 'minibus', :color_hex, :sentido, :uuid, 1)
+        ON DUPLICATE KEY UPDATE 
+            descripcion = VALUES(descripcion),
+            color_hex = VALUES(color_hex),
+            sentido = VALUES(sentido),
+            activo = 1
     ");
 
     $stmtParada = $pdo->prepare("
         INSERT INTO parada (nombre, latitud, longitud, uuid_capa, activo)
         VALUES (:nombre, :latitud, :longitud, :uuid, 1)
+        ON DUPLICATE KEY UPDATE 
+            nombre = VALUES(nombre),
+            activo = 1
     ");
 
     foreach ($archivos as $filePath) {
@@ -215,7 +208,6 @@ try {
             }
         }
 
-        // Guardar paradas
         if ($idRuta && !empty($coordsRuta)) {
             $total = count($coordsRuta);
             foreach ($coordsRuta as $i => $coord) {
@@ -240,7 +232,6 @@ try {
             }
         }
 
-        // ✅ ASOCIAR RUTA-LUGAR
         if ($idRuta && $idLugar) {
             $insRL = $pdo->prepare("INSERT IGNORE INTO ruta_lugar (id_ruta, id_lugar, orden) VALUES (?,?,1)");
             $insRL->execute([$idRuta, $idLugar]);
@@ -254,7 +245,7 @@ try {
 
     echo json_encode([
         'success' => true,
-        'mensaje' => '✅ Sincronización completada con nombres legibles',
+        'mensaje' => '✅ Sincronización completada',
         'stats' => $stats
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
 
