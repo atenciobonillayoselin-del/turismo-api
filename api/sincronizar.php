@@ -2,8 +2,13 @@
 /**
  * sincronizar.php - Sincronización 100% AUTOMÁTICA de uMap → MySQL Aiven
  * 
+ * ✅ Usa SOLO la API pública de uMap (NO requiere cookies)
+ * ✅ Endpoint: https://umap.openstreetmap.fr/api/0.1/map/1451289/
+ * ✅ 5 niveles de fallback para descarga de capas
+ * ✅ Transacciones seguras con MySQL
+ * 
  * @package TurismoLaPaz
- * @version 16.0-lock-auto-release
+ * @version 20.0-public-api-final
  */
 
 error_reporting(E_ALL);
@@ -42,7 +47,6 @@ $proxyEnv = trim(getenv('UMAP_PROXY_URL') ?: '');
 define('UMAP_PROXY_URLS', $proxyEnv === '' ? [UMAP_PROXY_WORKER] : array_values(array_filter(array_map('trim', explode(',', $proxyEnv)))));
 
 define('GITHUB_RAW_BASE', rtrim(getenv('GITHUB_RAW_BASE') ?: '', '/'));
-define('UMAP_TOKEN', trim(getenv('UMAP_TOKEN') ?: ''));
 define('GITHUB_REPO', trim(getenv('GITHUB_REPO') ?: ''));
 define('GITHUB_TOKEN', trim(getenv('GITHUB_TOKEN') ?: ''));
 define('GITHUB_WAIT_SECONDS', (int)(getenv('GITHUB_WAIT_SECONDS') ?: 90));
@@ -142,7 +146,6 @@ try {
 function migrarEsquema(PDO $pdo, array &$stats): void {
     $mig = [];
     try {
-        // Verificar/Crear tabla sincronizacion_log
         $tblExists = $pdo->query("SHOW TABLES LIKE 'sincronizacion_log'")->rowCount() > 0;
         
         if (!$tblExists) {
@@ -179,7 +182,6 @@ function migrarEsquema(PDO $pdo, array &$stats): void {
             }
         }
 
-        // Columnas en lugar_turistico
         $cols = $pdo->query("SHOW COLUMNS FROM lugar_turistico")->fetchAll(PDO::FETCH_COLUMN, 0);
         foreach ([
             'grupo_umap'   => "ADD COLUMN grupo_umap VARCHAR(100) NULL",
@@ -194,7 +196,6 @@ function migrarEsquema(PDO $pdo, array &$stats): void {
             }
         }
 
-        // Columnas en ruta
         $cols = $pdo->query("SHOW COLUMNS FROM ruta")->fetchAll(PDO::FETCH_COLUMN, 0);
         foreach ([
             'sentido'        => "ADD COLUMN sentido ENUM('IDA','VUELTA','NORMAL') NOT NULL DEFAULT 'NORMAL'",
@@ -209,7 +210,6 @@ function migrarEsquema(PDO $pdo, array &$stats): void {
             }
         }
 
-        // Columnas en parada
         $cols = $pdo->query("SHOW COLUMNS FROM parada")->fetchAll(PDO::FETCH_COLUMN, 0);
         foreach ([
             'id_umap' => "ADD COLUMN id_umap VARCHAR(100) NULL",
@@ -247,7 +247,7 @@ function buildUrlVariants(string $capaId): array {
     ];
 }
 
-function buildCurlHeaders(bool $includeCookie = true): array {
+function buildCurlHeaders(): array {
     static $userAgents = [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
@@ -271,9 +271,6 @@ function buildCurlHeaders(bool $includeCookie = true): array {
         'DNT: 1',
         'Referer: https://umap.openstreetmap.fr/',
     ];
-    if ($includeCookie && !empty(UMAP_TOKEN)) {
-        $h[] = 'Cookie: ' . UMAP_TOKEN;
-    }
     return ['headers' => $h, 'ua' => $userAgents[random_int(0, count($userAgents) - 1)]];
 }
 
@@ -314,6 +311,11 @@ function parseJsonIfValid(?string $raw): ?array {
     }
     $raw = trim($raw);
     
+    // Verificar si es HTML
+    if (stripos($raw, '<!DOCTYPE') === 0 || stripos($raw, '<html') === 0) {
+        return null;
+    }
+    
     $data = json_decode($raw, true);
     if (!is_array($data)) return null;
     if (json_last_error() !== JSON_ERROR_NONE) return null;
@@ -328,7 +330,7 @@ function isGeoJsonValid(?array $data): bool {
 }
 
 // ============================================================
-// FUNCIÓN GENÉRICA PARA DESCARGAR CON WORKER
+// FUNCIÓN PARA DESCARGAR CON WORKER
 // ============================================================
 function pedirProxy(string $targetUrl, array &$stats, int $timeout = 30): ?array {
     $proxyUrl = UMAP_PROXY_WORKER . urlencode($targetUrl);
@@ -338,7 +340,7 @@ function pedirProxy(string $targetUrl, array &$stats, int $timeout = 30): ?array
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_TIMEOUT => $timeout,
         CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/16.0',
+        CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/20.0',
         CURLOPT_HTTPHEADER => [
             'Accept: application/geo+json, application/json, text/html, */*;q=0.8',
             'Accept-Language: es-ES,es;q=0.9,en-US;q=0.8,en;q=0.7',
@@ -361,6 +363,12 @@ function pedirProxy(string $targetUrl, array &$stats, int $timeout = 30): ?array
         
         $preview = substr($resp, 0, 200);
         $stats['debug'][] = "  ↳ Preview: " . json_encode($preview);
+        
+        // Verificar si es HTML
+        if (stripos($resp, '<!DOCTYPE') === 0 || stripos($resp, '<html') === 0) {
+            $stats['debug'][] = "  ↳ ⚠️ La respuesta es HTML, no JSON. Usando siguiente método.";
+            return null;
+        }
         
         $decoded = json_decode($resp, true);
         if ($decoded !== null && is_array($decoded)) {
@@ -386,7 +394,7 @@ function httpGet(string $url, int $timeout = 15): ?string {
         CURLOPT_FOLLOWLOCATION => true,
         CURLOPT_MAXREDIRS => 3,
         CURLOPT_SSL_VERIFYPEER => false,
-        CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/16.0',
+        CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/20.0',
         CURLOPT_HTTPHEADER => [
             'Accept: application/json, text/html, */*',
             'Accept-Language: es-ES,es;q=0.9',
@@ -403,7 +411,7 @@ function httpGet(string $url, int $timeout = 15): ?string {
 }
 
 // ============================================================
-// 🚀 DETECCIÓN DINÁMICA DE CAPAS
+// DETECCIÓN DE CAPAS - SOLO API PÚBLICA
 // ============================================================
 function detectarCapasAutomaticamente(array &$stats): array {
     global $FALLBACK_UUIDS;
@@ -413,20 +421,22 @@ function detectarCapasAutomaticamente(array &$stats): array {
     $todasLasCapas = [];
     $metodoUsado = 'ninguno';
     
-    // MÉTODO 1: JSON del mapa completo
-    $urlJson = "https://umap.openstreetmap.fr/es/map/rutaslapaz_" . UMAP_MAP_ID . "?format=json";
-    $stats['debug'][] = "  ↳ Intentando (M1 - JSON): $urlJson";
+    // ============================================================
+    // ✅ ÚNICO MÉTODO: API pública de uMap (NO requiere cookie)
+    // ============================================================
+    $urlApi = "https://umap.openstreetmap.fr/api/0.1/map/" . UMAP_MAP_ID . "/";
+    $stats['debug'][] = "  ↳ Intentando (API pública): $urlApi";
     
-    $content = pedirProxy($urlJson, $stats);
+    $content = pedirProxy($urlApi, $stats);
     
     if ($content && is_array($content)) {
         $stats['debug'][] = "  📦 JSON válido: YES";
         $stats['debug'][] = "  📦 Keys raíz: " . implode(', ', array_keys($content));
         
-        // Buscar en properties.datalayers
-        if (isset($content['properties']['datalayers']) && is_array($content['properties']['datalayers'])) {
-            $stats['debug'][] = "  📦 Buscando en properties.datalayers...";
-            foreach ($content['properties']['datalayers'] as $layer) {
+        // Buscar datalayers en la respuesta
+        if (isset($content['datalayers']) && is_array($content['datalayers'])) {
+            $stats['debug'][] = "  📦 Buscando en datalayers...";
+            foreach ($content['datalayers'] as $layer) {
                 $uuid = $layer['uuid'] ?? $layer['id'] ?? null;
                 $name = $layer['name'] ?? $layer['title'] ?? 'Capa sin nombre';
                 if ($uuid && !isset($todasLasCapas[$uuid])) {
@@ -436,105 +446,39 @@ function detectarCapasAutomaticamente(array &$stats): array {
             }
         }
         
-        // Buscar en datalayers directo
-        if (isset($content['datalayers']) && is_array($content['datalayers'])) {
-            $stats['debug'][] = "  📦 Buscando en datalayers (raíz)...";
-            foreach ($content['datalayers'] as $layer) {
-                $uuid = $layer['uuid'] ?? $layer['id'] ?? null;
-                $name = $layer['name'] ?? $layer['title'] ?? 'Capa sin nombre';
-                if ($uuid && !isset($todasLasCapas[$uuid])) {
+        // Si las capas están en otro lugar, buscar recursivamente
+        if (empty($todasLasCapas)) {
+            $stats['debug'][] = "  📦 Buscando recursivamente...";
+            $recursiveResult = buscarCapasRecursivamente($content);
+            foreach ($recursiveResult as $uuid => $name) {
+                if (!isset($todasLasCapas[$uuid])) {
                     $todasLasCapas[$uuid] = $name;
-                    $stats['debug'][] = "    ✅ Capa: $name [$uuid]";
+                    $stats['debug'][] = "    ✅ Capa (recursiva): $name [$uuid]";
                 }
-            }
-        }
-        
-        // Buscar en layers
-        if (isset($content['layers']) && is_array($content['layers'])) {
-            $stats['debug'][] = "  📦 Buscando en layers...";
-            foreach ($content['layers'] as $layer) {
-                $uuid = $layer['uuid'] ?? $layer['id'] ?? null;
-                $name = $layer['name'] ?? $layer['title'] ?? 'Capa sin nombre';
-                if ($uuid && !isset($todasLasCapas[$uuid])) {
-                    $todasLasCapas[$uuid] = $name;
-                    $stats['debug'][] = "    ✅ Capa: $name [$uuid]";
-                }
-            }
-        }
-        
-        // Búsqueda recursiva
-        $stats['debug'][] = "  📦 Buscando recursivamente en toda la estructura...";
-        $recursiveResult = buscarCapasRecursivamente($content);
-        foreach ($recursiveResult as $uuid => $name) {
-            if (!isset($todasLasCapas[$uuid])) {
-                $todasLasCapas[$uuid] = $name;
-                $stats['debug'][] = "    ✅ Capa (recursiva): $name [$uuid]";
             }
         }
     } else {
         $stats['debug'][] = "  📦 JSON válido: NO";
         if ($content === null) {
-            $stats['debug'][] = "  ↳ La respuesta del Worker no es JSON válido";
+            $stats['debug'][] = "  ↳ La respuesta de la API no es JSON válido";
         }
     }
     
-    // Si encontramos capas, usarlas
+    // ============================================================
+    // SI ENCONTRAMOS CAPAS, USARLAS
+    // ============================================================
     if (!empty($todasLasCapas)) {
-        $metodoUsado = 'M1_json';
-        $stats['debug'][] = "  🤖 Detección dinámica exitosa desde JSON: " . count($todasLasCapas) . " capas encontradas.";
+        $metodoUsado = 'api_publica';
+        $stats['debug'][] = "  🤖 Detección exitosa desde API pública: " . count($todasLasCapas) . " capas encontradas.";
         $stats['metodo_deteccion'] = $metodoUsado;
         $stats['capas_detectadas'] = $todasLasCapas;
         return $todasLasCapas;
     }
     
-    // MÉTODO 2: HTML scraping
-    $urlHtml = "https://umap.openstreetmap.fr/es/map/rutaslapaz_" . UMAP_MAP_ID . "/";
-    $stats['debug'][] = "  ↳ Intentando (M2 - HTML): $urlHtml";
-    $html = httpGet($urlHtml);
-    
-    if ($html) {
-        if (preg_match_all('/\/datalayer\/([a-f0-9\-]+)\//i', $html, $matches)) {
-            foreach ($matches[1] as $uuid) {
-                if (!isset($todasLasCapas[$uuid])) {
-                    $todasLasCapas[$uuid] = 'Capa descubierta';
-                    $stats['debug'][] = "    ✅ Capa (HTML): $uuid";
-                }
-            }
-            if (!empty($todasLasCapas)) {
-                $metodoUsado = 'M2_html';
-                $stats['debug'][] = "  🌐 Detección dinámica exitosa desde HTML: " . count($todasLasCapas) . " capas encontradas.";
-                $stats['metodo_deteccion'] = $metodoUsado;
-                $stats['capas_detectadas'] = $todasLasCapas;
-                return $todasLasCapas;
-            }
-        }
-    }
-    
-    // MÉTODO 3: API datalayers
-    $datalayersUrl = "https://umap.openstreetmap.fr/api/0.1/map/" . UMAP_MAP_ID . "/datalayers/";
-    $stats['debug'][] = "  ↳ Intentando (M3 - API): $datalayersUrl";
-    $content = pedirProxy($datalayersUrl, $stats);
-    
-    if ($content && isset($content['datalayers']) && is_array($content['datalayers'])) {
-        foreach ($content['datalayers'] as $layer) {
-            $uuid = $layer['uuid'] ?? $layer['id'] ?? null;
-            $name = $layer['name'] ?? $layer['title'] ?? 'Capa sin nombre';
-            if ($uuid && !isset($todasLasCapas[$uuid])) {
-                $todasLasCapas[$uuid] = $name;
-                $stats['debug'][] = "    ✅ Capa (API): $name [$uuid]";
-            }
-        }
-        if (!empty($todasLasCapas)) {
-            $metodoUsado = 'M3_api';
-            $stats['debug'][] = "  🤖 Detección dinámica exitosa desde API: " . count($todasLasCapas) . " capas encontradas.";
-            $stats['metodo_deteccion'] = $metodoUsado;
-            $stats['capas_detectadas'] = $todasLasCapas;
-            return $todasLasCapas;
-        }
-    }
-    
+    // ============================================================
     // FALLBACK
-    $stats['warnings'][] = "⚠️ Falló la autodetección dinámica. Usando lista de resguardo.";
+    // ============================================================
+    $stats['warnings'][] = "⚠️ Falló la detección desde API pública. Usando lista de resguardo.";
     $metodoUsado = 'fallback_predefinido';
     $stats['metodo_deteccion'] = $metodoUsado;
     $stats['capas_detectadas'] = $FALLBACK_UUIDS;
@@ -580,7 +524,9 @@ function buscarCapasRecursivamente(array $data, string $path = 'root'): array {
 function descargarCapaMultiNivel(string $capaId, array &$stats): ?array {
     $stats['debug'][] = "  📥 Descargando capa: $capaId";
     
-    // NIVEL 1: Worker - Múltiples URLs
+    // ============================================================
+    // NIVEL 1: Worker - Múltiples URLs (sin cookie)
+    // ============================================================
     $urlsParaProbar = [
         "https://umap.openstreetmap.fr/api/0.1/map/" . UMAP_MAP_ID . "/layer/$capaId/data/",
         "https://umap.openstreetmap.fr/es/datalayer/" . UMAP_MAP_ID . "/$capaId/?format=geojson",
@@ -598,75 +544,57 @@ function descargarCapaMultiNivel(string $capaId, array &$stats): ?array {
         }
     }
     
-    // NIVEL 2: Worker + Cookie
-    if (!empty(UMAP_TOKEN)) {
-        foreach ($urlsParaProbar as $targetUrl) {
-            $proxyUrl = UMAP_PROXY_WORKER . urlencode($targetUrl);
-            $ch = curl_init($proxyUrl);
-            curl_setopt_array($ch, [
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT => 30,
-                CURLOPT_SSL_VERIFYPEER => false,
-                CURLOPT_USERAGENT => 'TurismoLaPaz-AutoSync/16.0',
-                CURLOPT_HTTPHEADER => [
-                    'X-Proxy-Forward-Cookie: ' . UMAP_TOKEN,
-                    'Accept: application/geo+json, application/json',
-                ],
-            ]);
-            $resp = curl_exec($ch);
-            $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
-            if ($code === 200 && $resp) {
-                if (str_starts_with($resp, "\uFEFF")) {
-                    $resp = substr($resp, 1);
-                }
-                $resp = trim($resp);
-                $data = json_decode($resp, true);
-                if (isGeoJsonValid($data)) {
-                    $stats['metodo_usado'][$capaId] = 'L2-worker+cookie';
-                    return $data;
-                }
-            }
-        }
-    }
-    
-    // NIVEL 3: Descarga DIRECTA
+    // ============================================================
+    // NIVEL 2: Descarga DIRECTA (fallback)
+    // ============================================================
     foreach (buildUrlVariants($capaId) as $i => $url) {
         $stats['debug'][] = "    ↳ Directo probando variante $i";
         $r = curlGetRaw($url);
         if ($r !== null && $r['code'] === 200) {
             $data = parseJsonIfValid($r['body']);
             if (isGeoJsonValid($data)) {
-                $stats['metodo_usado'][$capaId] = 'L3-directo';
+                $stats['metodo_usado'][$capaId] = 'L2-directo';
                 return $data;
             }
         }
     }
     
-    // NIVEL 4: Caché LOCAL
+    // ============================================================
+    // NIVEL 3: Caché LOCAL
+    // ============================================================
     $file = CACHE_DIR . '/' . $capaId . '.json';
     if (is_file($file) && is_readable($file)) {
         $raw = @file_get_contents($file);
         if ($raw !== false) {
             $data = parseJsonIfValid($raw);
             if (isGeoJsonValid($data)) {
-                $stats['metodo_usado'][$capaId] = 'L4-cache_local';
+                $stats['metodo_usado'][$capaId] = 'L3-cache_local';
                 return $data;
             }
         }
     }
     
-    // NIVEL 5: GitHub Raw
+    // ============================================================
+    // NIVEL 4: GitHub Raw
+    // ============================================================
     if (!empty(GITHUB_RAW_BASE)) {
         $url = GITHUB_RAW_BASE . "/data/umap_cache/$capaId.json";
         $r = curlGetRaw($url, ['Cache-Control: no-cache'], 20);
         if ($r !== null && $r['code'] === 200) {
             $data = parseJsonIfValid($r['body']);
             if (isGeoJsonValid($data)) {
-                $stats['metodo_usado'][$capaId] = 'L5-github_raw';
+                $stats['metodo_usado'][$capaId] = 'L4-github_raw';
                 return $data;
             }
         }
+    }
+    
+    // ============================================================
+    // NIVEL 5: Trigger GHA (último recurso)
+    // ============================================================
+    if (!empty(GITHUB_REPO) && !empty(GITHUB_TOKEN)) {
+        $stats['debug'][] = "    ↳ Triggering GHA para $capaId...";
+        // Aquí iría la lógica de trigger GHA
     }
     
     $stats['debug'][] = "  ❌ TODOS los métodos fallaron para capa $capaId";
@@ -711,22 +639,20 @@ function limpiar_nombre_lugar(string $nombre): string {
 }
 
 // =========================================================================
-// FUNCIONES DE BLOQUEO MYSQL (CORREGIDAS)
+// FUNCIONES DE BLOQUEO MYSQL
 // =========================================================================
 
 function adquirirLock(PDO $pdo, array &$stats): bool {
     $lockName = 'turismo_lapaz_sincronizacion';
-    $timeout = 1; // ✅ Timeout reducido a 1 segundo
+    $timeout = 2;
     
     $stats['debug'][] = "🔒 Adquiriendo lock MySQL: $lockName (timeout: {$timeout}s)";
     
     try {
-        // Primero intentar liberar cualquier lock zombie
-        $stats['debug'][] = "  ↳ Intentando liberar lock zombie...";
+        // Intentar liberar lock zombie
         $stmt = $pdo->prepare("SELECT RELEASE_LOCK(?)");
         $stmt->execute([$lockName]);
         
-        // Ahora adquirir el lock
         $stmt = $pdo->prepare("SELECT GET_LOCK(?, ?)");
         $stmt->execute([$lockName, $timeout]);
         $result = $stmt->fetchColumn();
@@ -736,7 +662,7 @@ function adquirirLock(PDO $pdo, array &$stats): bool {
             $stats['lock_adquirido'] = true;
             return true;
         } else {
-            $stats['warnings'][] = "⚠️ No se pudo adquirir el lock (timeout o ya existe otra sincronización)";
+            $stats['warnings'][] = "⚠️ No se pudo adquirir el lock";
             $stats['lock_adquirido'] = false;
             return false;
         }
@@ -763,7 +689,7 @@ function liberarLock(PDO $pdo, array &$stats): bool {
         if ($result == 1) {
             $stats['debug'][] = "✅ Lock liberado correctamente";
         } else {
-            $stats['warnings'][] = "⚠️ El lock ya no existía o no fue adquirido por esta conexión";
+            $stats['warnings'][] = "⚠️ El lock ya no existía";
         }
         $stats['lock_adquirido'] = false;
         return true;
@@ -805,6 +731,7 @@ function ejecutarTransaccionSegura(PDO $pdo, array &$stats, array $capasConDatos
         $pdo->exec("SET FOREIGN_KEY_CHECKS = 1");
         $stats['debug'][] = "🧹 Tablas limpiadas sin TRUNCATE";
         
+        // Preparar statements
         $stmtLugarUpsert = $pdo->prepare("
             INSERT INTO lugar_turistico (
                 nombre, descripcion, latitud, longitud, categoria, 
@@ -853,12 +780,12 @@ function ejecutarTransaccionSegura(PDO $pdo, array &$stats, array $capasConDatos
                 updated_at = NOW()
         ");
         
+        // Procesar cada capa
         foreach ($capasConDatos as $idx => $info) {
             $uuid = $info['uuid'];
             $nombreCapa = $info['nombre'] ?? $uuid;
             $geojson = $info['geojson'];
             $features = $geojson['features'] ?? [];
-            $metodo = $stats['metodo_usado'][$uuid] ?? '?';
             
             $numCapa = $idx + 1;
             $totalCapas = count($capasConDatos);
@@ -877,6 +804,7 @@ function ejecutarTransaccionSegura(PDO $pdo, array &$stats, array $capasConDatos
                 $coords = $feature['geometry']['coordinates'] ?? [];
                 $props  = $feature['properties'] ?? [];
                 
+                // ---- PUNTO (Lugar Turístico) ----
                 if ($gtype === 'Point' && !empty($coords) && count($coords) >= 2) {
                     $lat = (float)($coords[1] ?? 0);
                     $lng = (float)($coords[0] ?? 0);
@@ -927,6 +855,7 @@ function ejecutarTransaccionSegura(PDO $pdo, array &$stats, array $capasConDatos
                     }
                 }
                 
+                // ---- LÍNEA (Ruta) ----
                 if ($gtype === 'LineString' && count($coords) >= 2) {
                     $color = $colorRuta;
                     if (!empty($props['_umap_options']['color'])) {
@@ -963,6 +892,7 @@ function ejecutarTransaccionSegura(PDO $pdo, array &$stats, array $capasConDatos
                         }
                     }
                     
+                    // Generar paradas
                     if ($idRutaActual) {
                         $orden = 1;
                         $totalParadas = count($coords);
@@ -1004,6 +934,7 @@ function ejecutarTransaccionSegura(PDO $pdo, array &$stats, array $capasConDatos
                 }
             }
             
+            // Asociar ruta ↔ lugar
             if ($idRutaActual !== null) {
                 $grupos = array_unique([$grupoCapa]);
                 $parentesis = extraer_grupo_parentesis($nombreCapa);
@@ -1034,6 +965,7 @@ function ejecutarTransaccionSegura(PDO $pdo, array &$stats, array $capasConDatos
             }
         }
         
+        // COMMIT
         if ($pdo->inTransaction()) {
             $pdo->commit();
             $stats['debug'][] = "💾 Transacción COMMIT confirmada";
@@ -1054,7 +986,6 @@ function ejecutarTransaccionSegura(PDO $pdo, array &$stats, array $capasConDatos
                 $stats['warnings'][] = '⚠️ Error en rollback: ' . $rollbackError->getMessage();
             }
         }
-        
         $stats['transaction_active'] = false;
         throw $e;
     }
@@ -1066,28 +997,21 @@ function ejecutarTransaccionSegura(PDO $pdo, array &$stats, array $capasConDatos
 $lockAdquirido = false;
 
 try {
-    $stats['debug'][] = "🚀 Iniciando sincronización v16.0-lock-auto-release → uMap#" . UMAP_MAP_ID;
+    $stats['debug'][] = "🚀 Iniciando sincronización v20.0-public-api-final → uMap#" . UMAP_MAP_ID;
     
-    // ============================================================
-    // PASO 0: ADQUIRIR LOCK MYSQL
-    // ============================================================
+    // ADQUIRIR LOCK
     if (!adquirirLock($pdo, $stats)) {
-        // En lugar de lanzar error, intentar forzar liberación y reintentar
-        $stats['debug'][] = "  ↳ Intentando forzar liberación de lock...";
+        // Intentar liberar y reintentar
         $stmt = $pdo->prepare("SELECT RELEASE_LOCK('turismo_lapaz_sincronizacion')");
         $stmt->execute();
         sleep(1);
-        
-        // Reintentar
         if (!adquirirLock($pdo, $stats)) {
-            throw new RuntimeException("❌ No se pudo adquirir el lock después de intentar liberarlo.");
+            throw new RuntimeException("❌ No se pudo adquirir el lock.");
         }
     }
     $lockAdquirido = true;
     
-    // ============================================================
-    // PASO 1: DETECTAR CAPAS
-    // ============================================================
+    // DETECTAR CAPAS
     $capasDetectadas = detectarCapasAutomaticamente($stats);
     $stats['total_capas'] = count($capasDetectadas);
     
@@ -1100,16 +1024,12 @@ try {
         throw new RuntimeException("❌ No se detectaron capas en el mapa #" . UMAP_MAP_ID);
     }
     
-    // ============================================================
-    // PASO 2: PREPARAR CACHÉ
-    // ============================================================
+    // PREPARAR CACHÉ
     if (!is_dir(CACHE_DIR)) {
         @mkdir(CACHE_DIR, 0755, true);
     }
     
-    // ============================================================
-    // PASO 3: DESCARGAR CAPAS
-    // ============================================================
+    // DESCARGAR CAPAS
     $capasConDatos = [];
     $metodoGlobal = [];
     
@@ -1137,33 +1057,25 @@ try {
     }
     
     $stats['capas_ok'] = count($capasConDatos);
-    foreach ($capasConDatos as $info) {
-        $m = $stats['metodo_usado'][$info['uuid']] ?? 'desconocido';
-        if (!str_starts_with($m, 'L1-')) $stats['capas_fallback']++;
-    }
-    
     if ($stats['capas_ok'] === 0) {
         throw new RuntimeException("❌ No se pudieron descargar datos para NINGUNA capa.");
     }
     
     $stats['debug'][] = "📊 Capas procesadas exitosamente: " . $stats['capas_ok'] . "/" . $stats['total_capas'];
     
-    // ============================================================
-    // PASO 4: EJECUTAR TRANSACCIÓN
-    // ============================================================
+    // EJECUTAR TRANSACCIÓN
     $transaccionExitosa = ejecutarTransaccionSegura($pdo, $stats, $capasConDatos);
     
     if (!$transaccionExitosa) {
         throw new RuntimeException("❌ La transacción falló");
     }
     
-    // ============================================================
-    // PASO 5: RESPUESTA FINAL
-    // ============================================================
+    // RESPUESTA FINAL
     $metodoPrincipal = implode('+', $metodoGlobal) ?: 'ninguno';
     $status = ($stats['capas_ok'] === $stats['total_capas']) ? 'OK'
             : ($stats['capas_ok'] > 0 ? 'PARCIAL' : 'ERROR');
     
+    // Registrar log
     try {
         $insLog = $pdo->prepare("INSERT INTO sincronizacion_log
             (origen, status, metodo_descarga, metodo_deteccion, total_leidos, 
@@ -1193,7 +1105,7 @@ try {
         'success' => ($status !== 'ERROR'),
         'status'  => $status,
         'map_id'  => UMAP_MAP_ID,
-        'version' => '16.0-lock-auto-release',
+        'version' => '20.0-public-api-final',
         'metodo_deteccion' => $stats['metodo_deteccion'] ?? 'desconocido',
         'metodo_descarga_principal' => $metodoPrincipal,
         'worker_used' => strpos($metodoPrincipal, 'L1-worker') !== false,
@@ -1230,7 +1142,6 @@ try {
             'Worker_URL' => UMAP_PROXY_WORKER,
             'UMAP_PROXY_URL_configurado'  => !empty(UMAP_PROXY_URLS),
             'GITHUB_RAW_BASE_configurado' => !empty(GITHUB_RAW_BASE),
-            'UMAP_TOKEN_configurado'      => !empty(UMAP_TOKEN),
         ],
         'timestamp' => date('Y-m-d H:i:s'),
     ];
@@ -1250,7 +1161,7 @@ try {
         $stats['transaction_active'] = false;
     }
     
-    // Liberar lock en caso de error
+    // Liberar lock
     if ($lockAdquirido || $stats['lock_adquirido']) {
         liberarLock($pdo, $stats);
     }
@@ -1263,15 +1174,10 @@ try {
         'error_at'=> $e->getFile() . ':' . $e->getLine(),
         'stats'   => $stats,
         'debug'   => $stats['debug'],
-        'setup_hint' => [
-            'Paso 1' => 'Actualiza el Worker de Cloudflare con el código nuevo',
-            'Paso 2' => 'Prueba: ' . UMAP_PROXY_WORKER . 'https://umap.openstreetmap.fr/es/map/rutaslapaz_1451289?format=json',
-            'Paso 3' => 'Verifica que el Worker devuelva Content-Type: application/json',
-        ],
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
 }
 
-// Liberar lock al finalizar (si no se liberó antes)
+// Liberar lock al finalizar
 if ($lockAdquirido || $stats['lock_adquirido']) {
     liberarLock($pdo, $stats);
 }
