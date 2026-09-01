@@ -87,19 +87,9 @@ function detectarSentido($nombreArchivo) {
 function extraerUuid($nombreArchivo) {
     $nombre = pathinfo($nombreArchivo, PATHINFO_FILENAME);
     if (preg_match('/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/i', $nombre, $matches)) {
-        return strtolower($matches[0]);
+        return $matches[0];
     }
-    return strtolower($nombre);
-}
-
-function reconstruirRelacionesRutaLugar(PDO $pdo): void {
-    $pdo->exec("DELETE FROM ruta_lugar");
-    $pdo->exec("INSERT INTO ruta_lugar (id_ruta, id_lugar, orden)
-        SELECT r.id_ruta, l.id_lugar, 1
-        FROM ruta r
-        INNER JOIN lugar_turistico l ON l.uuid_capa = r.uuid_capa
-        WHERE r.activo = 1 AND l.activo = 1
-        ORDER BY r.id_ruta, l.id_lugar");
+    return $nombre;
 }
 
 try {
@@ -194,11 +184,6 @@ try {
                         ':uuid' => $uuid
                     ]);
                     $idLugar = $pdo->lastInsertId();
-                    if (!$idLugar || $idLugar <= 0) {
-                        $idLugarRow = $pdo->prepare("SELECT id_lugar FROM lugar_turistico WHERE uuid_capa = ? ORDER BY id_lugar DESC LIMIT 1");
-                        $idLugarRow->execute([$uuid]);
-                        $idLugar = (int)($idLugarRow->fetchColumn() ?: 0);
-                    }
                     $stats['lugares']++;
                 }
             }
@@ -219,11 +204,6 @@ try {
                     ':uuid' => $uuid
                 ]);
                 $idRuta = $pdo->lastInsertId();
-                if (!$idRuta || $idRuta <= 0) {
-                    $idRutaRow = $pdo->prepare("SELECT id_ruta FROM ruta WHERE uuid_capa = ? ORDER BY id_ruta DESC LIMIT 1");
-                    $idRutaRow->execute([$uuid]);
-                    $idRuta = (int)($idRutaRow->fetchColumn() ?: 0);
-                }
                 $stats['rutas']++;
             }
         }
@@ -261,7 +241,6 @@ try {
         $stats['procesados']++;
     }
 
-    reconstruirRelacionesRutaLugar($pdo);
     $pdo->commit();
 
     echo json_encode([
