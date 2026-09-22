@@ -20,6 +20,7 @@ echo json_encode([
             'GET /'                          => 'Esta información',
             'GET /api/test_connection.php'   => 'Prueba conexión MySQL + extensiones PHP',
             'POST /api/vaciar_base_datos.php' => 'Vaciar todas las tablas de la base de datos',
+            'POST /api/reestructurar_base_datos.php' => 'Reestructurar base de datos a modelo Laravel',
         ],
         'Autenticación' => [
             'POST /api/registro.php'         => 'Crear usuario con email/password',
