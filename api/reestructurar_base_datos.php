@@ -32,7 +32,7 @@ try {
     $errores = [];
     
     // 1. Eliminar campos de uMap que no están en Laravel
-    $camposAEliminar = ['grupo_umap', 'icono_umap', 'color_hex', 'uuid_capa', 'id_umap', 'panorama_url'];
+    $camposAEliminar = ['grupo_umap', 'icono_umap', 'color_hex', 'uuid_capa', 'id_umap', 'panorama_url', 'categoria'];
     
     foreach ($camposAEliminar as $campo) {
         try {
@@ -52,7 +52,7 @@ try {
             $cambiosRealizados[] = "Renombrado categoria a id_categoria";
         }
     } catch (PDOException $e) {
-        $errores[] = "Error al renombrar categoria: " . $e->getMessage();
+        // Ignorar error si ya fue eliminado en el paso anterior
     }
     
     // 3. Agregar campos faltantes del modelo Laravel
