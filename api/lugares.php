@@ -27,8 +27,8 @@ function colExiste(PDO $pdo, string $tabla, string $col): bool {
 }
 
 try {
-    $selCols = ['id_lugar','nombre','descripcion','categoria','latitud','longitud','activo','created_at','updated_at'];
-    $extras = ['grupo_umap','icono_umap','color_hex'];
+    $selCols = ['id_lugar','nombre','descripcion','latitud','longitud','activo','created_at','updated_at'];
+    $extras = ['categoria','grupo_umap','icono_umap','color_hex'];
     foreach ($extras as $c) {
         if (colExiste($pdo, 'lugar_turistico', $c)) {
             $selCols[] = $c;
@@ -64,6 +64,10 @@ try {
         }
         if (empty($lugar['color_hex'])) {
             $lugar['color_hex'] = '#E74C3C';
+        }
+        // Asegurar que categoria exista aunque sea null
+        if (!isset($lugar['categoria'])) {
+            $lugar['categoria'] = '';
         }
     }
     unset($lugar);
