@@ -28,7 +28,7 @@ function colExiste(PDO $pdo, string $tabla, string $col): bool {
 
 try {
     $selCols = ['id_lugar','nombre','descripcion','latitud','longitud','activo','created_at','updated_at'];
-    $extras = ['categoria','grupo_umap','icono_umap','color_hex'];
+    $extras = ['descripcion_corta','calificacion','costo','es_gratuito','abierto_todos_los_dias','horarios','costo_nino','costo_adulto','costo_tercera_edad','id_categoria'];
     foreach ($extras as $c) {
         if (colExiste($pdo, 'lugar_turistico', $c)) {
             $selCols[] = $c;
@@ -52,22 +52,27 @@ try {
     ];
 
     foreach ($lugares as &$lugar) {
-        if (empty($lugar['grupo_umap'])) {
-            $lugar['grupo_umap'] = $lugar['nombre'];
+        // Asegurar que campos opcionales tengan valores por defecto
+        if (!isset($lugar['descripcion_corta'])) {
+            $lugar['descripcion_corta'] = '';
         }
-        if (empty($lugar['icono_umap'])) {
-            $cat = strtolower($lugar['categoria'] ?? '');
-            $lugar['icono_umap'] = 'star';
-            foreach ($iconosDefault as $k => $v) {
-                if (str_contains($cat, $k)) { $lugar['icono_umap'] = $v; break; }
-            }
+        if (!isset($lugar['calificacion'])) {
+            $lugar['calificacion'] = 0.0;
         }
-        if (empty($lugar['color_hex'])) {
-            $lugar['color_hex'] = '#E74C3C';
+        if (!isset($lugar['costo'])) {
+            $lugar['costo'] = 0.00;
         }
-        // Asegurar que categoria exista aunque sea null
-        if (!isset($lugar['categoria'])) {
-            $lugar['categoria'] = '';
+        if (!isset($lugar['es_gratuito'])) {
+            $lugar['es_gratuito'] = 0;
+        }
+        if (!isset($lugar['abierto_todos_los_dias'])) {
+            $lugar['abierto_todos_los_dias'] = 0;
+        }
+        if (!isset($lugar['horarios'])) {
+            $lugar['horarios'] = null;
+        }
+        if (!isset($lugar['id_categoria'])) {
+            $lugar['id_categoria'] = null;
         }
     }
     unset($lugar);
