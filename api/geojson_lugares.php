@@ -7,6 +7,21 @@
  */
 require_once __DIR__ . '/../config/database.php';
 
+function colExiste(PDO $pdo, string $tabla, string $col): bool {
+    static $cache = [];
+    $key = "$tabla.$col";
+    if (isset($cache[$key])) return $cache[$key];
+    try {
+        $stmt = $pdo->prepare("SHOW COLUMNS FROM `$tabla` LIKE ?");
+        $stmt->execute([$col]);
+        $cache[$key] = (bool)$stmt->fetch();
+        return $cache[$key];
+    } catch (Throwable $e) {
+        $cache[$key] = false;
+        return false;
+    }
+}
+
 header('Content-Type: application/geo+json; charset=utf-8');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, OPTIONS');
@@ -61,13 +76,24 @@ try {
         $params[':grupo']  = "%{$filtroGrupo}%";
         $params[':grupo2'] = "%{$filtroGrupo}%";
     }
-    if (!empty($filtroCategoria)) {
+    if (!empty($filtroCategoria) && colExiste($pdo, 'lugar_turistico', 'categoria')) {
         $where[] = "LOWER(categoria) LIKE :categoria";
         $params[':categoria'] = "%" . strtolower($filtroCategoria) . "%";
     }
 
-    $sql = "SELECT id_lugar, nombre, descripcion, categoria, latitud, longitud,
-                   grupo_umap, icono_umap, color_hex, panorama_url, imagen_url, updated_at
+    // Verificar columnas que existen
+    $colsBase = ['id_lugar', 'nombre', 'descripcion', 'latitud', 'longitud'];
+    $colsExtra = ['categoria', 'grupo_umap', 'icono_umap', 'color_hex', 'panorama_url', 'imagen_url', 'updated_at'];
+    
+    foreach ($colsExtra as $col) {
+        if (colExiste($pdo, 'lugar_turistico', $col)) {
+            $colsBase[] = $col;
+        }
+    }
+    
+    $colsSql = implode(', ', $colsBase);
+    
+    $sql = "SELECT $colsSql
             FROM lugar_turistico
             WHERE " . implode(" AND ", $where) . "
             ORDER BY id_lugar ASC";

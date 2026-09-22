@@ -26,6 +26,21 @@ $DB_PASS = getenv('PDO_PASSWORD') ?: '';
 
 $CACHE_DIR = __DIR__ . '/../data/umap_cache';
 
+function colExiste(PDO $pdo, string $tabla, string $col): bool {
+    static $cache = [];
+    $key = "$tabla.$col";
+    if (isset($cache[$key])) return $cache[$key];
+    try {
+        $stmt = $pdo->prepare("SHOW COLUMNS FROM `$tabla` LIKE ?");
+        $stmt->execute([$col]);
+        $cache[$key] = (bool)$stmt->fetch();
+        return $cache[$key];
+    } catch (Throwable $e) {
+        $cache[$key] = false;
+        return false;
+    }
+}
+
 if (!is_dir($CACHE_DIR)) {
     echo json_encode(['success' => false, 'error' => '❌ No se encontró la carpeta umap_cache']);
     exit;
@@ -113,15 +128,29 @@ try {
         'errores' => []
     ];
 
-    // ✅ CORREGIDO: Sin placeholders en VALUES
+    // ✅ CORREGIDO: Verificar si columna categoria existe
+    $colCategoria = colExiste($pdo, 'lugar_turistico', 'categoria') ? 'categoria' : '';
+    $colsLugar = ['nombre', 'descripcion', 'latitud', 'longitud', 'uuid_capa', 'activo'];
+    $valsLugar = [':nombre', ':descripcion', ':latitud', ':longitud', ':uuid', '1'];
+    
+    if ($colCategoria) {
+        $colsLugar[] = 'categoria';
+        $valsLugar[] = "'Atracción turística'";
+    }
+    
+    $colsLugarSql = implode(', ', $colsLugar);
+    $valsLugarSql = implode(', ', $valsLugar);
+    
+    $updateLugar = "nombre = VALUES(nombre), descripcion = VALUES(descripcion), activo = 1";
+    if ($colCategoria) {
+        $updateLugar .= ", categoria = VALUES(categoria)";
+    }
+    
     $stmtLugar = $pdo->prepare("
-        INSERT INTO lugar_turistico (nombre, descripcion, latitud, longitud, categoria, uuid_capa, activo)
-        VALUES (:nombre, :descripcion, :latitud, :longitud, 'Atracción turística', :uuid, 1)
+        INSERT INTO lugar_turistico ($colsLugarSql)
+        VALUES ($valsLugarSql)
         ON DUPLICATE KEY UPDATE 
-            nombre = VALUES(nombre),
-            descripcion = VALUES(descripcion),
-            categoria = VALUES(categoria),
-            activo = 1
+            $updateLugar
     ");
 
     $stmtRuta = $pdo->prepare("

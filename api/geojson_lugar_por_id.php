@@ -6,6 +6,21 @@
  */
 require_once __DIR__ . '/../config/database.php';
 
+function colExiste(PDO $pdo, string $tabla, string $col): bool {
+    static $cache = [];
+    $key = "$tabla.$col";
+    if (isset($cache[$key])) return $cache[$key];
+    try {
+        $stmt = $pdo->prepare("SHOW COLUMNS FROM `$tabla` LIKE ?");
+        $stmt->execute([$col]);
+        $cache[$key] = (bool)$stmt->fetch();
+        return $cache[$key];
+    } catch (Throwable $e) {
+        $cache[$key] = false;
+        return false;
+    }
+}
+
 header('Content-Type: application/geo+json; charset=utf-8');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, OPTIONS');
@@ -72,8 +87,19 @@ try {
         $params[':g2'] = "%{$grupo}%";
     }
 
-    $sql = "SELECT id_lugar, nombre, descripcion, categoria, latitud, longitud,
-                   grupo_umap, icono_umap, color_hex, panorama_url, imagen_url, id_umap
+    // Verificar columnas que existen
+    $colsBase = ['id_lugar', 'nombre', 'descripcion', 'latitud', 'longitud'];
+    $colsExtra = ['categoria', 'grupo_umap', 'icono_umap', 'color_hex', 'panorama_url', 'imagen_url', 'id_umap'];
+    
+    foreach ($colsExtra as $col) {
+        if (colExiste($pdo, 'lugar_turistico', $col)) {
+            $colsBase[] = $col;
+        }
+    }
+    
+    $colsSql = implode(', ', $colsBase);
+    
+    $sql = "SELECT $colsSql
             FROM lugar_turistico
             WHERE " . implode(' AND ', $where) . "
             LIMIT 1";
