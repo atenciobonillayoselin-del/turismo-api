@@ -73,10 +73,10 @@ try {
         
         $sql = "INSERT INTO usuario (
                     email, nombre, telefono, carnet, perfil_completo, firebase_uid,
-                    password, rol, activo, created_at, last_login
+                    password, rol, activo, created_at
                 ) VALUES (
                     :email, :nombre, :telefono, :carnet, :perfil_completo, :firebase_uid,
-                    NULL, 'usuario', 1, NOW(), NOW()
+                    NULL, 'usuario', 1, NOW()
                 )";
         $stmt = $pdo->prepare($sql);
         $stmt->execute([

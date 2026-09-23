@@ -39,7 +39,7 @@ try {
         exit;
     }
 
-    $sqlUpdate = "UPDATE usuario SET last_login = NOW() WHERE id_usuario = :id";
+    $sqlUpdate = "UPDATE usuario SET updated_at = NOW() WHERE id_usuario = :id";
     $stmtUpdate = $pdo->prepare($sqlUpdate);
     $stmtUpdate->execute([':id' => $usuario['id_usuario']]);
 
