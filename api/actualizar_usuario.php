@@ -38,6 +38,10 @@ $nombre = trim($data['nombre']);
 $telefono = trim($data['telefono'] ?? '');
 $carnet = trim($data['carnet'] ?? '');
 $perfilCompleto = isset($data['perfil_completo']) ? (int)$data['perfil_completo'] : 0;
+// firebase_uid es NOT NULL + UNIQUE en la tabla `usuario`; si no llega desde la app
+// (no debería pasar en el flujo normal, ya que este endpoint se llama con sesión activa),
+// generamos un valor único temporal para no romper el INSERT.
+$firebaseUid = trim($data['firebase_uid'] ?? '') ?: ('sinuid_' . bin2hex(random_bytes(8)));
 
 logDebug("Procesando: email=$email, nombre=$nombre, perfil_completo=$perfilCompleto");
 
@@ -61,9 +65,34 @@ try {
     // Verificar si usuario existe
     $checkStmt = $pdo->prepare("SELECT id_usuario FROM usuario WHERE email = :email");
     $checkStmt->execute([':email' => $email]);
-    if (!$checkStmt->fetch()) {
-        echo json_encode(['success' => false, 'error' => 'Usuario no encontrado']);
-        exit;
+    $usuarioExistente = $checkStmt->fetch();
+
+    if (!$usuarioExistente) {
+        // Si no existe, crear el usuario (para usuarios de Firebase que completan perfil)
+        logDebug("Usuario no encontrado, creando nuevo usuario");
+        
+        $sql = "INSERT INTO usuario (
+                    email, nombre, telefono, carnet, perfil_completo, firebase_uid,
+                    password, rol, activo, created_at, last_login
+                ) VALUES (
+                    :email, :nombre, :telefono, :carnet, :perfil_completo, :firebase_uid,
+                    NULL, 'usuario', 1, NOW(), NOW()
+                )";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([
+            ':email' => $email,
+            ':nombre' => $nombre,
+            ':telefono' => $telefono,
+            ':carnet' => $carnet,
+            ':perfil_completo' => $perfilCompleto,
+            ':firebase_uid' => $firebaseUid
+        ]);
+
+        $idUsuario = $pdo->lastInsertId();
+        logDebug("Nuevo usuario creado con ID: $idUsuario");
+    } else {
+        $idUsuario = $usuarioExistente['id_usuario'];
+        logDebug("Usuario existente encontrado con ID: $idUsuario");
     }
 
     // ACTUALIZAR

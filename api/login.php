@@ -22,7 +22,7 @@ $email = $data['email'];
 $password = $data['password'];
 
 try {
-    $sql = "SELECT id_usuario, email, nombre, password_hash, rol, firebase_uid, perfil_completo
+    $sql = "SELECT id_usuario, email, nombre, password, rol, firebase_uid, perfil_completo
             FROM usuario
             WHERE email = :email AND activo = 1";
     $stmt = $pdo->prepare($sql);
@@ -34,7 +34,7 @@ try {
         exit;
     }
 
-    if (!password_verify($password, $usuario['password_hash'])) {
+    if (!$usuario['password'] || !password_verify($password, $usuario['password'])) {
         echo json_encode(['success' => false, 'error' => 'Contraseña incorrecta']);
         exit;
     }

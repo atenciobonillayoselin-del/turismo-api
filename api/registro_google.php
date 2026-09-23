@@ -122,9 +122,9 @@ try {
         $query = "INSERT INTO usuario (
                     email, nombre, firebase_uid, foto_perfil,
                     telefono, carnet, perfil_completo,
-                    password_hash, rol, activo, created_at, last_login
+                    password, rol, activo, created_at, last_login
                   ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, '', 'turista', 1, NOW(), NOW()
+                    ?, ?, ?, ?, ?, ?, ?, NULL, 'usuario', 1, NOW(), NOW()
                   )";
         $stmt = $pdo->prepare($query);
         $stmt->execute([

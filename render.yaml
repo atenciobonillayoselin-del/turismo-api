@@ -76,25 +76,33 @@ services:
       # ============================================================
       # 🟥 OBLIGATORIAS - BASE DE DATOS AIVEN MYSQL
       # ============================================================
+      # ⚠️ 23/09/2026: estos valores estaban desactualizados (apuntaban a un
+      # servicio Aiven distinto: host "...3c89e575..." y base "defaultdb",
+      # que ya no es el que usa el proyecto). Se corrigieron para que
+      # coincidan con el Aiven actual (el mismo que usan Laragon y Laravel).
+      # Si en el Dashboard de Render → Environment ya tienes estas variables
+      # cargadas con los valores viejos, ACTUALÍZALAS (o bórralas para que
+      # se use el valor por defecto de este archivo / el fallback de
+      # config/database.php).
       - key: PDO_HOST
-        sync: false
-        description: "Host MySQL Aiven → mysql-3c89e575-turismo-la-paz.d.aivencloud.com"
+        value: mysql-3e660e89-atenciobonillayoselin-e9b2.g.aivencloud.com
+        description: "Host MySQL Aiven"
 
       - key: PDO_PORT
-        sync: false
-        description: "Puerto MySQL Aiven → 23909"
+        value: "27665"
+        description: "Puerto MySQL Aiven"
 
       - key: PDO_DATABASE
-        value: defaultdb
-        description: "Nombre de la BD en Aiven → defaultdb"
+        value: app_turistica_la_paz
+        description: "Nombre de la BD en Aiven"
 
       - key: PDO_USERNAME
-        sync: false
-        description: "Usuario MySQL Aiven → avnadmin"
+        value: avnadmin
+        description: "Usuario MySQL Aiven"
 
       - key: PDO_PASSWORD
         sync: false
-        description: "🔑 CONTRASEÑA MySQL Aiven (OBLIGATORIA - no dejar vacía)"
+        description: "🔑 CONTRASEÑA MySQL Aiven (OBLIGATORIA - no dejar vacía). Ponla manualmente en el Dashboard → Environment."
 
       - key: PDO_SSL_CA
         value: config/ca.pem

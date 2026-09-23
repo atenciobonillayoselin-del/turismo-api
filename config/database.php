@@ -42,13 +42,52 @@ if ($esAccesoDirecto) {
 }
 
 // ============================================================
-// ✅ LECTURA DE VARIABLES DE ENTORNO
+// ✅ CARGA OPCIONAL DE .env LOCAL (solo para desarrollo en Laragon)
+// ------------------------------------------------------------
+// Este archivo NUNCA debe subirse a git (ya está en .gitignore).
+// En Render.com las variables se configuran directamente en el
+// Dashboard → Environment, así que este bloque simplemente no
+// encuentra el archivo ahí y no hace nada.
 // ============================================================
-$host     = (string)(getenv('PDO_HOST')     ?: 'localhost');
+$envPath = dirname(__DIR__) . '/.env';
+if (is_file($envPath) && is_readable($envPath)) {
+    foreach (file($envPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+        $line = trim($line);
+        if ($line === '' || str_starts_with($line, '#') || !str_contains($line, '=')) {
+            continue;
+        }
+        [$key, $value] = array_map('trim', explode('=', $line, 2));
+        $value = trim($value, "\"'");
+        if ($key !== '' && getenv($key) === false) {
+            putenv("$key=$value");
+        }
+    }
+}
+
+// ============================================================
+// ✅ LECTURA DE VARIABLES DE ENTORNO
+// ------------------------------------------------------------
+// Sin valores hardcodeados: si faltan, la conexión falla con un
+// mensaje claro en vez de usar credenciales escritas en el código
+// (GitHub bloquea los pushes que contienen contraseñas en texto
+// plano, y es lo correcto).
+// ============================================================
+$host     = (string)(getenv('PDO_HOST')     ?: '');
 $port     = (string)(getenv('PDO_PORT')     ?: '3306');
-$dbname   = (string)(getenv('PDO_DATABASE') ?: 'app_turistica_la_paz');
-$username = (string)(getenv('PDO_USERNAME') ?: 'root');
+$dbname   = (string)(getenv('PDO_DATABASE') ?: '');
+$username = (string)(getenv('PDO_USERNAME') ?: '');
 $password = (string)(getenv('PDO_PASSWORD') ?: '');
+
+if ($host === '' || $dbname === '' || $username === '') {
+    $msg = '[database.php] Faltan variables de entorno PDO_HOST/PDO_DATABASE/PDO_USERNAME. '
+         . 'En Render: Dashboard → Environment. En local: crea un archivo .env en la raíz de turismo_api (no se sube a git).';
+    if ($esAccesoDirecto) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'error' => $msg], JSON_UNESCAPED_UNICODE);
+        exit;
+    }
+    throw new RuntimeException($msg);
+}
 
 // ============================================================
 // ✅ RESOLVER RUTA A CERTIFICADO SSL CA

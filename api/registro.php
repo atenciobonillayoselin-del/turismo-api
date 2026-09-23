@@ -45,11 +45,11 @@ try {
 
     // INSERTAR
     $sql = "INSERT INTO usuario (
-                email, password_hash, nombre, firebase_uid, telefono, carnet,
+                email, password, nombre, firebase_uid, telefono, carnet,
                 perfil_completo, rol, activo, created_at, last_login
             ) VALUES (
                 :email, :password, :nombre, :firebase_uid, :telefono, :carnet,
-                :perfil_completo, 'turista', 1, NOW(), NOW()
+                :perfil_completo, 'usuario', 1, NOW(), NOW()
             )";
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
@@ -77,7 +77,7 @@ try {
             'id' => $idUsuario,
             'email' => $email,
             'nombre' => $nombre,
-            'rol' => 'turista',
+            'rol' => 'usuario',
             'telefono' => $telefono,
             'carnet' => $carnet,
             'perfil_completo' => $perfilCompleto
