@@ -15,7 +15,7 @@ try {
     $sql = "SELECT id_categoria, nombre, slug, icono 
             FROM categoria_lugar 
             WHERE activo = 1 
-            ORDER BY nombre ASC";
+            ORDER BY id_categoria ASC";
     
     $stmt = $pdo->prepare($sql);
     $stmt->execute();
