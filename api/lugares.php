@@ -11,32 +11,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-function colExiste(PDO $pdo, string $tabla, string $col): bool {
-    static $cache = [];
-    $key = "$tabla.$col";
-    if (isset($cache[$key])) return $cache[$key];
-    try {
-        $stmt = $pdo->prepare("SHOW COLUMNS FROM `$tabla` LIKE ?");
-        $stmt->execute([$col]);
-        $cache[$key] = (bool)$stmt->fetch();
-        return $cache[$key];
-    } catch (Throwable $e) {
-        $cache[$key] = false;
-        return false;
-    }
-}
-
 try {
-    $selCols = ['id_lugar','nombre','descripcion','latitud','longitud','activo','created_at','updated_at'];
-    $extras = ['descripcion_corta','calificacion','costo','es_gratuito','abierto_todos_los_dias','horarios','costo_nino','costo_adulto','costo_tercera_edad','id_categoria'];
-    foreach ($extras as $c) {
-        if (colExiste($pdo, 'lugar_turistico', $c)) {
-            $selCols[] = $c;
-        }
-    }
-    $colsSql = implode(', ', $selCols);
-
-    $sql = "SELECT $colsSql FROM lugar_turistico WHERE activo = 1 ORDER BY id_lugar ASC";
+    $sql = "SELECT lt.id_lugar, lt.nombre, lt.descripcion, lt.descripcion_corta, lt.latitud, lt.longitud,
+                   lt.direccion, lt.calificacion, lt.costo, lt.costo_nino, lt.costo_adulto, lt.costo_tercera_edad,
+                   lt.es_gratuito, lt.abierto_todos_los_dias, lt.horarios, lt.tipo_transporte,
+                   lt.activo, lt.created_at, lt.updated_at, lt.id_categoria,
+                   cl.nombre as categoria, cl.slug as categoria_slug, cl.icono as categoria_icono
+            FROM lugar_turistico lt
+            LEFT JOIN categoria_lugar cl ON lt.id_categoria = cl.id_categoria
+            WHERE lt.activo = 1
+            ORDER BY lt.id_lugar ASC";
     $stmt = $pdo->prepare($sql);
     $stmt->execute();
     $lugares = $stmt->fetchAll(PDO::FETCH_ASSOC);

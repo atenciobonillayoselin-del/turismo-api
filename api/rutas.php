@@ -91,7 +91,7 @@ function obtenerRutas($pdo) {
         }
         
         // Si no, listar todas las rutas (con filtro opcional por tipo)
-        $sql = "SELECT id_ruta, nombre, descripcion, tipo, color_hex, activo, id_grupo_umap, sentido 
+        $sql = "SELECT id_ruta, nombre, descripcion, tipo, color_hex, activo, sentido 
                 FROM ruta 
                 WHERE activo = 1";
         
@@ -117,7 +117,6 @@ function obtenerRutas($pdo) {
                 'tipo' => $ruta['tipo'] ?? 'minibus',
                 'color_hex' => $ruta['color_hex'] ?? '#0066CC',
                 'sentido' => $ruta['sentido'] ?? 'NORMAL',
-                'grupo_umap' => $ruta['id_grupo_umap'] ?? ''
             ];
         }
         
