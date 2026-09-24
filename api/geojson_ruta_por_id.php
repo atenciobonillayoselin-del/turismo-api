@@ -35,7 +35,7 @@ try {
         $params[':nombre'] = "%{$nombre}%";
     }
 
-    $sqlRuta = "SELECT id_ruta, nombre, descripcion, tipo, color_hex, sentido, coords_geojson
+    $sqlRuta = "SELECT id_ruta, nombre, descripcion, tipo, color_hex, sentido, coords_geojson, puntos_gps_ida
                   FROM ruta
                   WHERE " . implode(' AND ', $where) . "
                   ORDER BY id_ruta ASC LIMIT 50";
@@ -77,6 +77,23 @@ try {
                 $lat = (float)$pt['latitud'];
                 $lng = (float)$pt['longitud'];
                 if ($lat !== 0.0 && $lng !== 0.0) $coords[] = [$lng, $lat];
+            }
+        }
+        if (count($coords) < 2 && !empty($ruta['puntos_gps_ida'])) {
+            $pares = explode(';', trim($ruta['puntos_gps_ida']));
+            foreach ($pares as $par) {
+                $par = trim($par);
+                if (empty($par)) continue;
+                $gpsCoords = explode(',', $par);
+                if (count($gpsCoords) >= 2) {
+                    try {
+                        $lat = (float)trim($gpsCoords[0]);
+                        $lng = (float)trim($gpsCoords[1]);
+                        if ($lat !== 0.0 && $lng !== 0.0) $coords[] = [$lng, $lat];
+                    } catch (Exception $e) {
+                        continue;
+                    }
+                }
             }
         }
         

@@ -32,7 +32,7 @@ try {
     $hasCoordsJson = tableColExists($pdo, 'ruta', 'coords_geojson');
     $hasSentido    = tableColExists($pdo, 'ruta', 'sentido');
 
-    $selRuta = ['r.id_ruta','r.nombre','r.descripcion','r.tipo','r.color_hex'];
+    $selRuta = ['r.id_ruta','r.nombre','r.descripcion','r.tipo','r.color_hex','r.puntos_gps_ida'];
     if ($hasCoordsJson) $selRuta[] = 'r.coords_geojson';
     if ($hasSentido)    $selRuta[] = 'r.sentido';
 
@@ -111,6 +111,23 @@ try {
                 $lat = (float)$pt['latitud'];
                 $lng = (float)$pt['longitud'];
                 if ($lat !== 0.0 && $lng !== 0.0) $puntos[] = [$lat, $lng];
+            }
+        }
+        if (count($puntos) < 2 && !empty($ruta['puntos_gps_ida'])) {
+            $pares = explode(';', trim($ruta['puntos_gps_ida']));
+            foreach ($pares as $par) {
+                $par = trim($par);
+                if (empty($par)) continue;
+                $coords = explode(',', $par);
+                if (count($coords) >= 2) {
+                    try {
+                        $lat = (float)trim($coords[0]);
+                        $lng = (float)trim($coords[1]);
+                        if ($lat !== 0.0 && $lng !== 0.0) $puntos[] = [$lat, $lng];
+                    } catch (Exception $e) {
+                        continue;
+                    }
+                }
             }
         }
         if (count($puntos) < 2) continue;
