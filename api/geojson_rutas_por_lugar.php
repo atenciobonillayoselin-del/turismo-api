@@ -29,7 +29,7 @@ try {
     $sqlRutas = "
         SELECT DISTINCT
             r.id_ruta,
-            r.nombre,
+            r.numero_ruta,
             r.descripcion,
             r.tipo,
             r.color_hex,
@@ -38,13 +38,13 @@ try {
         INNER JOIN ruta_lugar rl ON rl.id_ruta = r.id_ruta
         WHERE rl.id_lugar = :id_lugar
           AND r.activo = 1
-        ORDER BY r.nombre
+        ORDER BY r.numero_ruta
     ";
     $stmtRutas = $pdo->prepare($sqlRutas);
     $stmtRutas->execute([':id_lugar' => $idLugar]);
     $rutas = $stmtRutas->fetchAll();
 
-    // ✅ Si no hay en ruta_lugar, buscar por nombre
+    // ✅ Si no hay en ruta_lugar, buscar por descripcion
     if (empty($rutas)) {
         // Obtener nombre del lugar
         $sqlLugar = "SELECT nombre FROM lugar_turistico WHERE id_lugar = :id_lugar";
@@ -55,11 +55,11 @@ try {
         if ($lugar) {
             $nombreLugar = $lugar['nombre'];
             $sqlRutasNombre = "
-                SELECT id_ruta, nombre, descripcion, tipo, color_hex, sentido
+                SELECT id_ruta, numero_ruta, descripcion, tipo, color_hex, sentido
                 FROM ruta
                 WHERE activo = 1
-                  AND (nombre LIKE :nombre1 OR nombre LIKE :nombre2)
-                ORDER BY nombre
+                  AND (descripcion LIKE :nombre1 OR descripcion LIKE :nombre2)
+                ORDER BY numero_ruta
             ";
             $stmtRutas = $pdo->prepare($sqlRutasNombre);
             $stmtRutas->execute([
@@ -74,15 +74,23 @@ try {
     foreach ($rutas as $ruta) {
         $color = $ruta['color_hex'] ?: '#E74C3C';
         $sentido = $ruta['sentido'] ?? 'NORMAL';
+        
+        // Build name from numero_ruta + tipo or descripcion
+        $tipo = $ruta['tipo'] ?? 'minibus';
+        $tipoCapitalizado = ucfirst($tipo);
+        if (!empty($ruta['numero_ruta'])) {
+            $nombreArmado = "{$tipoCapitalizado} {$ruta['numero_ruta']}";
+        } else {
+            $nombreArmado = $ruta['descripcion'] ?? 'Ruta sin nombre';
+        }
 
         $data[] = [
             'id_ruta' => (int)$ruta['id_ruta'],
-            'nombre' => $ruta['nombre'],
+            'nombre' => $nombreArmado,
             'descripcion' => $ruta['descripcion'] ?? '',
-            'tipo' => $ruta['tipo'] ?? 'minibus',
+            'tipo' => $tipo,
             'color_hex' => $color,
             'sentido' => $sentido,
-            'activo' => (int)$ruta['activo'],
         ];
     }
 

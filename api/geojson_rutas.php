@@ -32,11 +32,9 @@ function tableColExists(PDO $pdo, string $table, string $col): bool {
 }
 
 try {
-    $hasCoordsJson = tableColExists($pdo, 'ruta', 'coords_geojson');
     $hasSentido    = tableColExists($pdo, 'ruta', 'sentido');
 
-    $selRuta = ['r.id_ruta','r.nombre','r.descripcion','r.tipo','r.color_hex','r.puntos_gps_ida'];
-    if ($hasCoordsJson) $selRuta[] = 'r.coords_geojson';
+    $selRuta = ['r.id_ruta','r.numero_ruta','r.descripcion','r.tipo','r.color_hex','r.puntos_gps_ida'];
     if ($hasSentido)    $selRuta[] = 'r.sentido';
 
     $where = ["r.activo = 1"];
@@ -49,7 +47,7 @@ try {
     if (!empty($grupo)) {
         $grupoLike = "%{$grupo}%";
         $subWhere = [];
-        $subWhere[] = "r.nombre LIKE :g1";
+        $subWhere[] = "r.descripcion LIKE :g1";
         $subWhere[] = "EXISTS (
             SELECT 1 FROM ruta_lugar rl
             INNER JOIN lugar_turistico l ON l.id_lugar = rl.id_lugar
@@ -68,54 +66,33 @@ try {
     $sqlRutas = "SELECT DISTINCT " . implode(', ', $selRuta) . "
                  FROM ruta r
                  WHERE " . implode(' AND ', $where) . "
-                 ORDER BY r.tipo, r.nombre";
+                 ORDER BY r.tipo, r.numero_ruta";
     $stmtRutas = $pdo->prepare($sqlRutas);
     $stmtRutas->execute($params);
     $rutas = $stmtRutas->fetchAll(PDO::FETCH_ASSOC);
 
-    $sqlPuntos = null;
-    $stmtPuntos = null;
-    if (!$hasCoordsJson) {
-        $sqlPuntos = "SELECT p.latitud, p.longitud, rp.orden
-                        FROM ruta_parada rp
-                        INNER JOIN parada p ON p.id_parada = rp.id_parada
-                        WHERE rp.id_ruta = :id_ruta
-                        ORDER BY rp.orden ASC";
-        $stmtPuntos = $pdo->prepare($sqlPuntos);
-    }
+    $sqlPuntos = "SELECT p.latitud, p.longitud, rp.orden
+                    FROM ruta_parada rp
+                    INNER JOIN parada p ON p.id_parada = rp.id_parada
+                    WHERE rp.id_ruta = :id_ruta
+                    ORDER BY rp.orden ASC";
+    $stmtPuntos = $pdo->prepare($sqlPuntos);
 
     $data = [];
     foreach ($rutas as $ruta) {
         $idR = (int)$ruta['id_ruta'];
         $puntos = [];
 
-        if ($hasCoordsJson && !empty($ruta['coords_geojson'])) {
-            $parsed = json_decode($ruta['coords_geojson'], true);
-            if (is_array($parsed) && count($parsed) >= 2) {
-                foreach ($parsed as $c) {
-                    $lat = (float)($c[1] ?? 0);
-                    $lng = (float)($c[0] ?? 0);
-                    if ($lat !== 0.0 && $lng !== 0.0) $puntos[] = [$lat, $lng];
-                }
-            }
+        // Get points from ruta_parada
+        $stmtPuntos->execute([':id_ruta' => $idR]);
+        $puntosDb = $stmtPuntos->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($puntosDb as $pt) {
+            $lat = (float)$pt['latitud'];
+            $lng = (float)$pt['longitud'];
+            if ($lat !== 0.0 && $lng !== 0.0) $puntos[] = [$lat, $lng];
         }
-        if (count($puntos) < 2) {
-            if ($stmtPuntos === null) {
-                $sqlPuntos = "SELECT p.latitud, p.longitud, rp.orden
-                                FROM ruta_parada rp
-                                INNER JOIN parada p ON p.id_parada = rp.id_parada
-                                WHERE rp.id_ruta = :id_ruta
-                                ORDER BY rp.orden ASC";
-                $stmtPuntos = $pdo->prepare($sqlPuntos);
-            }
-            $stmtPuntos->execute([':id_ruta' => $idR]);
-            $puntosDb = $stmtPuntos->fetchAll(PDO::FETCH_ASSOC);
-            foreach ($puntosDb as $pt) {
-                $lat = (float)$pt['latitud'];
-                $lng = (float)$pt['longitud'];
-                if ($lat !== 0.0 && $lng !== 0.0) $puntos[] = [$lat, $lng];
-            }
-        }
+        
+        // Fallback to puntos_gps_ida if not enough points
         if (count($puntos) < 2 && !empty($ruta['puntos_gps_ida'])) {
             $pares = explode(';', trim($ruta['puntos_gps_ida']));
             foreach ($pares as $par) {
@@ -135,15 +112,24 @@ try {
         }
         if (count($puntos) < 2) continue;
 
+        // Build name from numero_ruta + tipo or descripcion
+        $tipo = $ruta['tipo'] ?? 'minibus';
+        $tipoCapitalizado = ucfirst($tipo);
+        if (!empty($ruta['numero_ruta'])) {
+            $nombreArmado = "{$tipoCapitalizado} {$ruta['numero_ruta']}";
+        } else {
+            $nombreArmado = $ruta['descripcion'] ?? 'Ruta sin nombre';
+        }
+
         $color = $ruta['color_hex'];
         if (empty($color)) {
-            $color = (stripos($ruta['nombre'], 'vuelta') !== false) ? '#2980B9' : '#E74C3C';
+            $color = (stripos($nombreArmado, 'vuelta') !== false) ? '#2980B9' : '#E74C3C';
         }
 
         $data[] = [
-            'nombre' => $ruta['nombre'],
+            'nombre' => $nombreArmado,
             'descripcion' => $ruta['descripcion'] ?? '',
-            'tipo' => $ruta['tipo'] ?? 'minibus',
+            'tipo' => $tipo,
             'color' => $color,
             'puntos' => $puntos,
         ];

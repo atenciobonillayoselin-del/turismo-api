@@ -45,7 +45,7 @@ function obtenerRutas($pdo) {
         // Si se solicita una ruta específica CON paradas
         if ($id_ruta > 0) {
             // Obtener la ruta
-            $stmt = $pdo->prepare("SELECT * FROM ruta WHERE id_ruta = ? AND activo = 1");
+            $stmt = $pdo->prepare("SELECT id_ruta, numero_ruta, descripcion, tipo, color_hex, activo, sentido, puntos_gps_ida FROM ruta WHERE id_ruta = ? AND activo = 1");
             $stmt->execute([$id_ruta]);
             $ruta = $stmt->fetch(PDO::FETCH_ASSOC);
             
@@ -56,7 +56,16 @@ function obtenerRutas($pdo) {
                 ]);
                 return;
             }
-            
+
+            // Build name from numero_ruta + tipo or descripcion
+            $tipo = $ruta['tipo'] ?? 'minibus';
+            $tipoCapitalizado = ucfirst($tipo);
+            if (!empty($ruta['numero_ruta'])) {
+                $ruta['nombre'] = "{$tipoCapitalizado} {$ruta['numero_ruta']}";
+            } else {
+                $ruta['nombre'] = $ruta['descripcion'] ?? 'Ruta sin nombre';
+            }
+
             // Obtener paradas de la ruta
             $stmt = $pdo->prepare("
                 SELECT p.*, rp.orden, rp.es_inicio, rp.es_fin, rp.tiempo_estimado, rp.distancia_metros
@@ -91,30 +100,39 @@ function obtenerRutas($pdo) {
         }
         
         // Si no, listar todas las rutas (con filtro opcional por tipo)
-        $sql = "SELECT id_ruta, nombre, descripcion, tipo, color_hex, activo, sentido 
-                FROM ruta 
+        $sql = "SELECT id_ruta, numero_ruta, descripcion, tipo, color_hex, activo, sentido
+                FROM ruta
                 WHERE activo = 1";
-        
+
         $params = [];
         if ($tipo) {
             $sql .= " AND tipo = :tipo";
             $params[':tipo'] = $tipo;
         }
-        
-        $sql .= " ORDER BY nombre ASC";
-        
+
+        $sql .= " ORDER BY numero_ruta ASC";
+
         $stmt = $pdo->prepare($sql);
         $stmt->execute($params);
         $rutas = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        
+
         // Formatear datos
         $data = [];
         foreach ($rutas as $ruta) {
+            // Build name from numero_ruta + tipo or descripcion
+            $tipo = $ruta['tipo'] ?? 'minibus';
+            $tipoCapitalizado = ucfirst($tipo);
+            if (!empty($ruta['numero_ruta'])) {
+                $nombreArmado = "{$tipoCapitalizado} {$ruta['numero_ruta']}";
+            } else {
+                $nombreArmado = $ruta['descripcion'] ?? 'Ruta sin nombre';
+            }
+
             $data[] = [
                 'id_ruta' => (int)$ruta['id_ruta'],
-                'nombre' => $ruta['nombre'],
+                'nombre' => $nombreArmado,
                 'descripcion' => $ruta['descripcion'] ?? '',
-                'tipo' => $ruta['tipo'] ?? 'minibus',
+                'tipo' => $tipo,
                 'color_hex' => $ruta['color_hex'] ?? '#0066CC',
                 'sentido' => $ruta['sentido'] ?? 'NORMAL',
             ];
@@ -137,26 +155,26 @@ function obtenerRutas($pdo) {
 
 function crearRuta($pdo) {
     $data = json_decode(file_get_contents('php://input'), true);
-    
-    if (!$data || !isset($data['nombre'])) {
+
+    if (!$data || !isset($data['numero_ruta'])) {
         echo json_encode([
             'success' => false,
             'error' => 'Faltan datos requeridos'
         ]);
         return;
     }
-    
-    $sql = "INSERT INTO ruta (nombre, descripcion, tipo, color_hex, activo) 
-            VALUES (:nombre, :descripcion, :tipo, :color_hex, 1)";
-    
+
+    $sql = "INSERT INTO ruta (numero_ruta, descripcion, tipo, color_hex, activo)
+            VALUES (:numero_ruta, :descripcion, :tipo, :color_hex, 1)";
+
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
-        ':nombre' => $data['nombre'],
+        ':numero_ruta' => $data['numero_ruta'],
         ':descripcion' => $data['descripcion'] ?? '',
         ':tipo' => $data['tipo'] ?? 'minibus',
         ':color_hex' => $data['color_hex'] ?? '#0066CC'
     ]);
-    
+
     echo json_encode([
         'success' => true,
         'id' => (int)$pdo->lastInsertId()
@@ -166,7 +184,7 @@ function crearRuta($pdo) {
 function actualizarRuta($pdo) {
     $data = json_decode(file_get_contents('php://input'), true);
     $id = $_GET['id'] ?? null;
-    
+
     if (!$id) {
         echo json_encode([
             'success' => false,
@@ -174,23 +192,23 @@ function actualizarRuta($pdo) {
         ]);
         return;
     }
-    
-    $sql = "UPDATE ruta SET 
-            nombre = :nombre,
+
+    $sql = "UPDATE ruta SET
+            numero_ruta = :numero_ruta,
             descripcion = :descripcion,
             tipo = :tipo,
             color_hex = :color_hex
             WHERE id_ruta = :id";
-    
+
     $stmt = $pdo->prepare($sql);
     $stmt->execute([
-        ':nombre' => $data['nombre'],
+        ':numero_ruta' => $data['numero_ruta'],
         ':descripcion' => $data['descripcion'] ?? '',
         ':tipo' => $data['tipo'] ?? 'minibus',
         ':color_hex' => $data['color_hex'] ?? '#0066CC',
         ':id' => $id
     ]);
-    
+
     echo json_encode(['success' => true]);
 }
 

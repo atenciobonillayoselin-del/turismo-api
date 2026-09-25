@@ -34,11 +34,11 @@ try {
         $where[] = "id_ruta = :id";
         $params[':id'] = $idRuta;
     } else {
-        $where[] = "nombre LIKE :nombre";
+        $where[] = "descripcion LIKE :nombre";
         $params[':nombre'] = "%{$nombre}%";
     }
 
-    $sqlRuta = "SELECT id_ruta, nombre, descripcion, tipo, color_hex, sentido, coords_geojson, puntos_gps_ida
+    $sqlRuta = "SELECT id_ruta, numero_ruta, descripcion, tipo, color_hex, sentido, puntos_gps_ida
                   FROM ruta
                   WHERE " . implode(' AND ', $where) . "
                   ORDER BY id_ruta ASC LIMIT 50";
@@ -57,31 +57,26 @@ try {
     foreach ($rutas as $ruta) {
         $idR = (int)$ruta['id_ruta'];
         
-        // Intentar obtener coordenadas de coords_geojson si existe
-        $hasCoords = isset($ruta['coords_geojson']) && !empty($ruta['coords_geojson']);
+        // Build name from numero_ruta + tipo or descripcion
+        $tipo = $ruta['tipo'] ?? 'minibus';
+        $tipoCapitalizado = ucfirst($tipo);
+        if (!empty($ruta['numero_ruta'])) {
+            $nombreArmado = "{$tipoCapitalizado} {$ruta['numero_ruta']}";
+        } else {
+            $nombreArmado = $ruta['descripcion'] ?? 'Ruta sin nombre';
+        }
+        
+        // Get coordinates from ruta_parada
+        $stmtPuntos->execute([':id_ruta' => $idR]);
+        $puntos = $stmtPuntos->fetchAll(PDO::FETCH_ASSOC);
         $coords = [];
-        
-        if ($hasCoords) {
-            $parsed = json_decode($ruta['coords_geojson'], true);
-            if (is_array($parsed) && count($parsed) >= 2) {
-                foreach ($parsed as $c) {
-                    $lat = (float)($c[1] ?? 0);
-                    $lng = (float)($c[0] ?? 0);
-                    if ($lat !== 0.0 && $lng !== 0.0) $coords[] = [$lng, $lat];
-                }
-            }
+        foreach ($puntos as $pt) {
+            $lat = (float)$pt['latitud'];
+            $lng = (float)$pt['longitud'];
+            if ($lat !== 0.0 && $lng !== 0.0) $coords[] = [$lng, $lat];
         }
         
-        if (count($coords) < 2) {
-            $stmtPuntos->execute([':id_ruta' => $idR]);
-            $puntos = $stmtPuntos->fetchAll(PDO::FETCH_ASSOC);
-            $coords = [];
-            foreach ($puntos as $pt) {
-                $lat = (float)$pt['latitud'];
-                $lng = (float)$pt['longitud'];
-                if ($lat !== 0.0 && $lng !== 0.0) $coords[] = [$lng, $lat];
-            }
-        }
+        // Fallback to puntos_gps_ida if not enough points
         if (count($coords) < 2 && !empty($ruta['puntos_gps_ida'])) {
             $pares = explode(';', trim($ruta['puntos_gps_ida']));
             foreach ($pares as $par) {
@@ -104,21 +99,21 @@ try {
 
         $color = $ruta['color_hex'];
         if (empty($color)) {
-            $color = (stripos($ruta['nombre'], 'vuelta') !== false) ? '#2980B9' : '#E74C3C';
+            $color = (stripos($nombreArmado, 'vuelta') !== false) ? '#2980B9' : '#E74C3C';
         }
-        $esIda    = stripos($ruta['nombre'], 'ida')    !== false;
-        $esVuelta = stripos($ruta['nombre'], 'vuelta') !== false;
+        $esIda    = stripos($nombreArmado, 'ida')    !== false;
+        $esVuelta = stripos($nombreArmado, 'vuelta') !== false;
         $label    = $esIda ? '🟢 IDA' : ($esVuelta ? '🔵 VUELTA' : '📍');
 
         $features[] = [
             'type'     => 'Feature',
             'geometry' => ['type'=>'LineString','coordinates'=>$coords],
             'properties' => [
-                'name'           => $ruta['nombre'],
-                'title'          => $ruta['nombre'],
-                'description'    => "<strong>".htmlspecialchars($ruta['nombre'])."</strong><br>{$label} · ".count($coords)." paradas".(!empty($ruta['descripcion']) ? "<br><br>".htmlspecialchars($ruta['descripcion']) : ""),
+                'name'           => $nombreArmado,
+                'title'          => $nombreArmado,
+                'description'    => "<strong>".htmlspecialchars($nombreArmado)."</strong><br>{$label} · ".count($coords)." paradas".(!empty($ruta['descripcion']) ? "<br><br>".htmlspecialchars($ruta['descripcion']) : ""),
                 'id_ruta'        => $idR,
-                'tipo'           => $ruta['tipo'] ?? 'minibus',
+                'tipo'           => $tipo,
                 'color'          => $color,
                 'stroke'         => $color,
                 'stroke-width'   => 5,

@@ -17,7 +17,7 @@ if ($idLugar <= 0) {
 try {
     $sql = "SELECT
                 r.id_ruta,
-                r.nombre,
+                r.numero_ruta,
                 r.descripcion,
                 r.tipo,
                 r.color_hex,
@@ -26,7 +26,7 @@ try {
             INNER JOIN ruta_lugar rl ON rl.id_ruta = r.id_ruta
             WHERE rl.id_lugar = :id_lugar
               AND r.activo = 1
-            ORDER BY r.tipo, r.nombre";
+            ORDER BY r.tipo, r.numero_ruta";
 
     $stmt = $pdo->prepare($sql);
     $stmt->execute([':id_lugar' => $idLugar]);
@@ -35,7 +35,7 @@ try {
     if (count($rutas) === 0) {
         $sqlFallback = "SELECT
                             r.id_ruta,
-                            r.nombre,
+                            r.numero_ruta,
                             r.descripcion,
                             r.tipo,
                             r.color_hex,
@@ -48,11 +48,32 @@ try {
         $rutas = $stmt2->fetchAll(PDO::FETCH_ASSOC);
     }
 
+    // Build names for all routes
+    $data = [];
+    foreach ($rutas as $ruta) {
+        $tipo = $ruta['tipo'] ?? 'minibus';
+        $tipoCapitalizado = ucfirst($tipo);
+        if (!empty($ruta['numero_ruta'])) {
+            $nombreArmado = "{$tipoCapitalizado} {$ruta['numero_ruta']}";
+        } else {
+            $nombreArmado = $ruta['descripcion'] ?? 'Ruta sin nombre';
+        }
+
+        $data[] = [
+            'id_ruta' => (int)$ruta['id_ruta'],
+            'nombre' => $nombreArmado,
+            'descripcion' => $ruta['descripcion'] ?? '',
+            'tipo' => $tipo,
+            'color_hex' => $ruta['color_hex'] ?? '#0066CC',
+            'activo' => (int)$ruta['activo'],
+        ];
+    }
+
     echo json_encode([
         'success'   => true,
         'id_lugar'  => $idLugar,
-        'total'     => count($rutas),
-        'data'      => $rutas,
+        'total'     => count($data),
+        'data'      => $data,
     ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
 
 } catch (Exception $e) {

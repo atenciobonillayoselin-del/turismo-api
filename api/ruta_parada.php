@@ -31,10 +31,10 @@ if (!$idRuta) {
 
 try {
     // Verificar que la ruta existe
-    $checkRuta = $pdo->prepare("SELECT id_ruta, nombre FROM ruta WHERE id_ruta = :id_ruta AND activo = 1");
+    $checkRuta = $pdo->prepare("SELECT id_ruta, numero_ruta, descripcion, tipo FROM ruta WHERE id_ruta = :id_ruta AND activo = 1");
     $checkRuta->execute([':id_ruta' => $idRuta]);
     $ruta = $checkRuta->fetch(PDO::FETCH_ASSOC);
-    
+
     if (!$ruta) {
         echo json_encode([
             'success' => false,
@@ -42,6 +42,16 @@ try {
         ]);
         exit();
     }
+
+    // Build name from numero_ruta + tipo or descripcion
+    $tipo = $ruta['tipo'] ?? 'minibus';
+    $tipoCapitalizado = ucfirst($tipo);
+    if (!empty($ruta['numero_ruta'])) {
+        $nombreArmado = "{$tipoCapitalizado} {$ruta['numero_ruta']}";
+    } else {
+        $nombreArmado = $ruta['descripcion'] ?? 'Ruta sin nombre';
+    }
+    $ruta['nombre'] = $nombreArmado;
 
     // Obtener paradas de la ruta con orden
     $sql = "SELECT 
