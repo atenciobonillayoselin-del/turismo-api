@@ -25,6 +25,72 @@ try {
     $stmt->execute();
     $lugares = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+    // Obtener multimedia para cada lugar
+    foreach ($lugares as &$lugar) {
+        $lugarId = $lugar['id_lugar'];
+
+        // Obtener imágenes normales
+        $stmtImagenes = $pdo->prepare("
+            SELECT url, descripcion, orden
+            FROM lugar_multimedia
+            WHERE id_lugar = ? AND tipo = 'imagen' AND activo = 1
+            ORDER BY orden ASC
+        ");
+        $stmtImagenes->execute([$lugarId]);
+        $imagenes = $stmtImagenes->fetchAll(PDO::FETCH_ASSOC);
+        $lugar['imagenes'] = array_column($imagenes, 'url');
+
+        // Obtener imágenes 360
+        $stmt360 = $pdo->prepare("
+            SELECT url, descripcion, orden
+            FROM lugar_multimedia
+            WHERE id_lugar = ? AND tipo = '360' AND activo = 1
+            ORDER BY orden ASC
+        ");
+        $stmt360->execute([$lugarId]);
+        $imagenes360 = $stmt360->fetchAll(PDO::FETCH_ASSOC);
+        $lugar['imagenes360'] = array_column($imagenes360, 'url');
+
+        // Obtener modelos 3D
+        $stmt3d = $pdo->prepare("
+            SELECT url, descripcion, orden
+            FROM lugar_multimedia
+            WHERE id_lugar = ? AND tipo = '3d' AND activo = 1
+            ORDER BY orden ASC
+        ");
+        $stmt3d->execute([$lugarId]);
+        $modelos3d = $stmt3d->fetchAll(PDO::FETCH_ASSOC);
+        $lugar['modelos3d'] = array_column($modelos3d, 'url');
+
+        // Obtener audios
+        $stmtAudio = $pdo->prepare("
+            SELECT url, descripcion, idioma, duracion_seg, orden
+            FROM lugar_multimedia
+            WHERE id_lugar = ? AND tipo = 'audio' AND activo = 1
+            ORDER BY orden ASC
+        ");
+        $stmtAudio->execute([$lugarId]);
+        $audios = $stmtAudio->fetchAll(PDO::FETCH_ASSOC);
+        $lugar['audios'] = $audios;
+
+        // Obtener videos
+        $stmtVideo = $pdo->prepare("
+            SELECT url, descripcion, orden
+            FROM lugar_multimedia
+            WHERE id_lugar = ? AND tipo = 'video' AND activo = 1
+            ORDER BY orden ASC
+        ");
+        $stmtVideo->execute([$lugarId]);
+        $videos = $stmtVideo->fetchAll(PDO::FETCH_ASSOC);
+        $lugar['videos'] = array_column($videos, 'url');
+
+        // Campos legacy para compatibilidad con app Flutter existente
+        $lugar['foto_url'] = !empty($lugar['imagenes']) ? $lugar['imagenes'][0] : null;
+        $lugar['panorama_url'] = !empty($lugar['imagenes360']) ? $lugar['imagenes360'][0] : null;
+        $lugar['fotos'] = $lugar['imagenes'];
+    }
+    unset($lugar);
+
     $iconosDefault = [
         'mirador'    => 'landmark',
         'museo'      => 'museum',
