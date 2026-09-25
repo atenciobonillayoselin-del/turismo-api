@@ -10,7 +10,10 @@ header('Access-Control-Allow-Methods: GET, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With');
 header('Cache-Control: no-cache, must-revalidate');
 
-if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') { http_response_code(200); exit(); }
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    http_response_code(200);
+    exit;
+}
 
 $idRuta   = isset($_GET['id_ruta'])   ? (int) $_GET['id_ruta']   : 0;
 $grupo    = isset($_GET['grupo'])     ? trim($_GET['grupo'])     : '';
