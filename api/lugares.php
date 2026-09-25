@@ -131,7 +131,7 @@ try {
         'success' => true,
         'total'   => count($lugares),
         'data'    => $lugares,
-    ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
 
 } catch (Exception $e) {
     http_response_code(500);
