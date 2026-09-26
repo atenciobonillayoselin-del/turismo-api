@@ -124,6 +124,12 @@ try {
         if (!isset($lugar['id_categoria'])) {
             $lugar['id_categoria'] = null;
         }
+
+        // ✅ FIX TEMPORAL: Corregir Museo Nacional de Historia Natural (id_lugar = 10)
+        // El museo tiene horarios específicos (Lunes a Sábado) pero estaba marcado como abierto todos los días
+        if ($lugar['id_lugar'] == 10 && $lugar['abierto_todos_los_dias'] == 1) {
+            $lugar['abierto_todos_los_dias'] = 0;
+        }
     }
     unset($lugar);
 
