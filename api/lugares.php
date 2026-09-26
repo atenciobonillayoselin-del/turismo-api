@@ -15,7 +15,7 @@ try {
     $sql = "SELECT lt.id_lugar, lt.nombre, lt.descripcion, lt.descripcion_corta, lt.latitud, lt.longitud,
                    lt.direccion, lt.calificacion, lt.costo, lt.costo_nino, lt.costo_adulto, lt.costo_estudiante,
                    lt.costo_tercera_edad, lt.costo_adulto_mayor, lt.edad_max_nino, lt.costo_extranjero,
-                   lt.es_gratuito, lt.abierto_todos_los_dias, lt.horarios, lt.tipo_transporte,
+                   lt.es_gratuito, lt.condiciones_gratis, lt.abierto_todos_los_dias, lt.horarios, lt.tipo_transporte,
                    lt.activo, lt.created_at, lt.updated_at, lt.id_categoria,
                    cl.nombre as categoria, cl.slug as categoria_slug, cl.icono as categoria_icono
             FROM lugar_turistico lt
