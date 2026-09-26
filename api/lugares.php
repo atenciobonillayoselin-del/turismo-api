@@ -125,10 +125,27 @@ try {
             $lugar['id_categoria'] = null;
         }
 
-        // ✅ FIX TEMPORAL: Corregir Museo Nacional de Historia Natural (id_lugar = 10)
-        // El museo tiene horarios específicos (Lunes a Sábado) pero estaba marcado como abierto todos los días
-        if ($lugar['id_lugar'] == 10 && $lugar['abierto_todos_los_dias'] == 1) {
-            $lugar['abierto_todos_los_dias'] = 0;
+        // ✅ FIX GENERAL: Corregir lugares marcados como "abierto todos los días" que tienen horarios específicos
+        // Solo debe ser abierto_todos_los_dias = true si realmente está abierto 24/7 (00:00-23:59 todos los días)
+        if ($lugar['abierto_todos_los_dias'] == 1 && !empty($lugar['horarios'])) {
+            $horarios = json_decode($lugar['horarios'], true);
+            if (is_array($horarios)) {
+                // Verificar si los horarios son realmente de 00:00-23:59 todos los días
+                $esRealmente24_7 = true;
+                foreach ($horarios as $horario) {
+                    $horaApertura = $horario['hora_apertura'] ?? '';
+                    $horaCierre = $horario['hora_cierre'] ?? '';
+                    // Si no es 00:00-23:59, no es realmente abierto todos los días
+                    if ($horaApertura !== '00:00' || $horaCierre !== '23:59') {
+                        $esRealmente24_7 = false;
+                        break;
+                    }
+                }
+                // Si no es realmente 24/7, corregir el campo
+                if (!$esRealmente24_7) {
+                    $lugar['abierto_todos_los_dias'] = 0;
+                }
+            }
         }
     }
     unset($lugar);
