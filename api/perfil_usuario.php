@@ -1,66 +1,38 @@
 <?php
 // api/perfil_usuario.php
-header('Content-Type: application/json');
+header('Content-Type: application/json; charset=utf-8');
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, OPTIONS');
-header('Access-Control-Allow-Headers: Content-Type, Authorization');
+header('Access-Control-Allow-Headers: Content-Type, Authorization, X-Auth-Token');
+// El perfil debe ser SIEMPRE fresco (lo edita el admin desde Filament)
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+header('Pragma: no-cache');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit(0);
 }
 
 require_once '../config/database.php';
+require_once __DIR__ . '/_auth.php';
 
-$headers = getallheaders();
-$token = null;
-
-if (isset($headers['Authorization'])) {
-    $token = str_replace('Bearer ', '', $headers['Authorization']);
-}
+$token = obtenerTokenDeRequest();
 
 if (!$token) {
-    echo json_encode(['success' => false, 'error' => 'Token no proporcionado']);
+    http_response_code(401);
+    echo json_encode(['success' => false, 'code' => 'NO_TOKEN', 'error' => 'Token no proporcionado']);
     exit;
 }
 
 try {
-    $query = "SELECT
-                u.id_usuario,
-                u.email,
-                u.nombre,
-                u.rol,
-                u.firebase_uid,
-                u.foto_perfil,
-                u.telefono,
-                u.carnet,
-                u.perfil_completo
-              FROM usuario_sesion s
-              JOIN usuario u ON s.id_usuario = u.id_usuario
-              WHERE s.token = ? AND s.activo = 1 AND s.fecha_expiracion > NOW()";
-    $stmt = $pdo->prepare($query);
-    $stmt->execute([$token]);
-    $usuario = $stmt->fetch(PDO::FETCH_ASSOC);
+    $usuario = usuarioDesdeToken($pdo, $token);
 
     if ($usuario) {
-        echo json_encode([
-            'success' => true,
-            'user' => [
-                'id' => $usuario['id_usuario'],
-                'email' => $usuario['email'],
-                'nombre' => $usuario['nombre'],
-                'rol' => $usuario['rol'],
-                'firebase_uid' => $usuario['firebase_uid'],
-                'foto_perfil' => $usuario['foto_perfil'] ?? '',
-                'telefono' => $usuario['telefono'] ?? '',
-                'carnet' => $usuario['carnet'] ?? '',
-                'perfil_completo' => (int)($usuario['perfil_completo'] ?? 0)
-            ]
-        ]);
+        echo json_encode(['success' => true, 'user' => usuarioComoJson($usuario)]);
     } else {
-        echo json_encode(['success' => false, 'error' => 'Sesión inválida o expirada']);
+        http_response_code(401);
+        echo json_encode(['success' => false, 'code' => 'SESION_INVALIDA', 'error' => 'Sesión inválida o expirada']);
     }
-
 } catch (PDOException $e) {
-    echo json_encode(['success' => false, 'error' => 'Error en BD: ' . $e->getMessage()]);
+    http_response_code(500);
+    echo json_encode(['success' => false, 'code' => 'DB_ERROR', 'error' => 'Error en BD: ' . $e->getMessage()]);
 }
-?>

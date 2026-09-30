@@ -82,8 +82,8 @@ try {
         $stmt->execute([
             ':email' => $email,
             ':nombre' => $nombre,
-            ':telefono' => $telefono,
-            ':carnet' => $carnet,
+            ':telefono' => $telefono !== '' ? $telefono : null,
+            ':carnet' => $carnet !== '' ? $carnet : null,
             ':perfil_completo' => $perfilCompleto,
             ':firebase_uid' => $firebaseUid
         ]);
@@ -96,11 +96,13 @@ try {
     }
 
     // ACTUALIZAR
+    // Los vacíos NO borran lo ya guardado (la app manda '' cuando no tiene el dato)
+    // y se usa NULL en lugar de '' para no chocar con UNIQUE(carnet, rol).
     $sql = "UPDATE usuario SET
             nombre = :nombre,
-            telefono = :telefono,
-            carnet = :carnet,
-            perfil_completo = :perfil_completo
+            telefono = COALESCE(NULLIF(:telefono, ''), telefono),
+            carnet = COALESCE(NULLIF(:carnet, ''), carnet),
+            perfil_completo = GREATEST(perfil_completo, :perfil_completo)
             WHERE email = :email";
 
     $stmt = $pdo->prepare($sql);
@@ -135,6 +137,20 @@ try {
 
 } catch (PDOException $e) {
     logDebug("❌ Error: " . $e->getMessage());
+
+    // 23000 = violación de UNIQUE. Mensaje claro en vez del error crudo de SQL.
+    if ($e->getCode() === '23000') {
+        $msg = $e->getMessage();
+        if (stripos($msg, 'carnet') !== false) {
+            echo json_encode(['success' => false, 'error' => 'Ese carnet de identidad ya está registrado en otra cuenta.']);
+        } elseif (stripos($msg, 'firebase_uid') !== false) {
+            echo json_encode(['success' => false, 'error' => 'Esta cuenta ya está vinculada a otro usuario.']);
+        } else {
+            echo json_encode(['success' => false, 'error' => 'Ya existe un usuario con esos datos.']);
+        }
+        exit;
+    }
+
     echo json_encode(['success' => false, 'error' => 'Error en BD: ' . $e->getMessage()]);
 }
 ?>

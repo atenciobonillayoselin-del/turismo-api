@@ -86,6 +86,7 @@ try {
 
         $data[] = [
             'id_ruta' => (int)$ruta['id_ruta'],
+            'numero_ruta' => $ruta['numero_ruta'] ?? '',
             'nombre' => $nombreArmado,
             'descripcion' => $ruta['descripcion'] ?? '',
             'tipo' => $tipo,

@@ -88,26 +88,26 @@ try {
         logDebug("✅ perfil_completo final: $perfilFinal");
 
         // ACTUALIZAR USUARIO EXISTENTE
+        // IMPORTANTE: telefono / carnet / foto solo se pisan si la app envía un
+        // valor NO vacío. Antes se guardaban '' en cada login y se perdían los
+        // datos que el usuario o el admin ya habían cargado.
         $query = "UPDATE usuario SET
                   nombre = ?,
-                  email = ?,
                   firebase_uid = ?,
-                  foto_perfil = ?,
-                  telefono = ?,
-                  carnet = ?,
+                  foto_perfil = COALESCE(NULLIF(?, ''), foto_perfil),
+                  telefono = COALESCE(NULLIF(?, ''), telefono),
+                  carnet = COALESCE(NULLIF(?, ''), carnet),
                   perfil_completo = ?,
-                  updated_at = NOW(),
                   activo = 1
                   WHERE id_usuario = ?";
         $stmt = $pdo->prepare($query);
         $stmt->execute([
-            $nombreFinal, 
-            $email, 
-            $firebaseUid, 
+            $nombreFinal,
+            $firebaseUid,
             $photoUrl,
-            $telefono, 
-            $carnet, 
-            $perfilFinal, 
+            $telefono,
+            $carnet,
+            $perfilFinal,
             $usuarioExistente['id_usuario']
         ]);
 
@@ -132,8 +132,8 @@ try {
             $nombre, 
             $firebaseUid, 
             $photoUrl,
-            $telefono, 
-            $carnet, 
+            $telefono !== '' ? $telefono : null,
+            $carnet !== '' ? $carnet : null,
             $perfilCompleto
         ]);
 
@@ -145,9 +145,20 @@ try {
     // GENERAR TOKEN
     $token = bin2hex(random_bytes(32));
 
-    // Desactivar sesiones anteriores
-    $pdo->prepare("UPDATE usuario_sesion SET activo = 0 WHERE id_usuario = ?")
-        ->execute([$userId]);
+    // Antes se desactivaban TODAS las sesiones del usuario en cada login, así que
+    // cualquier login repetido (o dos dispositivos) invalidaba el token guardado
+    // en el teléfono y la app pedía iniciar sesión de nuevo.
+    // Ahora se conservan las 5 sesiones activas más recientes.
+    $pdo->prepare("UPDATE usuario_sesion SET activo = 0
+                    WHERE id_usuario = ? AND activo = 1
+                      AND id_sesion NOT IN (
+                          SELECT id_sesion FROM (
+                              SELECT id_sesion FROM usuario_sesion
+                               WHERE id_usuario = ? AND activo = 1
+                               ORDER BY id_sesion DESC LIMIT 4
+                          ) t
+                      )")
+        ->execute([$userId, $userId]);
 
     // Guardar nueva sesión
     $stmt = $pdo->prepare("INSERT INTO usuario_sesion (id_usuario, token, fecha_creacion, fecha_expiracion, activo)

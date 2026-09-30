@@ -125,6 +125,17 @@ try {
             $lugar['id_categoria'] = null;
         }
 
+        // ✅ OCULTAR COSTO para categorías específicas
+        // Hospitales (7), Universidades (8), Comedores (9), Cines (11)
+        // Estas categorías no muestran información de costo ni gratis
+        $categoriasSinCosto = [7, 8, 9, 11];
+        if (in_array($lugar['id_categoria'], $categoriasSinCosto)) {
+            $lugar['es_gratuito'] = null;
+            $lugar['costo'] = null;
+            $lugar['condiciones_gratis'] = null;
+            $lugar['tabla_precios'] = null;
+        }
+
         // ✅ FIX GENERAL: Corregir lugares marcados como "abierto todos los días" que tienen horarios específicos
         // Solo debe ser abierto_todos_los_dias = true si realmente está abierto 24/7 (00:00-23:59 todos los días)
         if ($lugar['abierto_todos_los_dias'] == 1 && !empty($lugar['horarios'])) {
