@@ -1,4 +1,3 @@
-// api/geojson_rutas_por_lugar.php (versión optimizada)
 <?php
 require_once __DIR__ . '/../config/database.php';
 
@@ -25,21 +24,51 @@ if ($idLugar <= 0) {
 }
 
 try {
-    // ✅ Obtener rutas del lugar
-    $sqlRutas = "
-        SELECT DISTINCT
-            r.id_ruta,
-            r.numero_ruta,
-            r.descripcion,
-            r.tipo,
-            r.color_hex,
-            r.sentido
-        FROM ruta r
-        INNER JOIN ruta_lugar rl ON rl.id_ruta = r.id_ruta
-        WHERE rl.id_lugar = :id_lugar
-          AND r.activo = 1
-        ORDER BY r.numero_ruta
-    ";
+    // ✅ Verificar columnas disponibles
+    $hasIdaVuelta = false;
+    try {
+        $check = $pdo->query("SHOW COLUMNS FROM ruta LIKE 'color_hex_ida'");
+        $hasIdaVuelta = (bool)$check->fetch();
+    } catch (Exception $e) {
+        $hasIdaVuelta = false;
+    }
+
+    // ✅ Obtener rutas del lugar con colores de ida/vuelta
+    if ($hasIdaVuelta) {
+        $sqlRutas = "
+            SELECT DISTINCT
+                r.id_ruta,
+                r.numero_ruta,
+                r.descripcion,
+                r.tipo,
+                r.color_hex,
+                r.color_hex_ida,
+                r.color_hex_vuelta,
+                r.puntos_gps_ida,
+                r.puntos_gps_vuelta,
+                r.sentido
+            FROM ruta r
+            INNER JOIN ruta_lugar rl ON rl.id_ruta = r.id_ruta
+            WHERE rl.id_lugar = :id_lugar
+              AND r.activo = 1
+            ORDER BY r.numero_ruta
+        ";
+    } else {
+        $sqlRutas = "
+            SELECT DISTINCT
+                r.id_ruta,
+                r.numero_ruta,
+                r.descripcion,
+                r.tipo,
+                r.color_hex,
+                r.sentido
+            FROM ruta r
+            INNER JOIN ruta_lugar rl ON rl.id_ruta = r.id_ruta
+            WHERE rl.id_lugar = :id_lugar
+              AND r.activo = 1
+            ORDER BY r.numero_ruta
+        ";
+    }
     $stmtRutas = $pdo->prepare($sqlRutas);
     $stmtRutas->execute([':id_lugar' => $idLugar]);
     $rutas = $stmtRutas->fetchAll();
@@ -54,13 +83,24 @@ try {
         
         if ($lugar) {
             $nombreLugar = $lugar['nombre'];
-            $sqlRutasNombre = "
-                SELECT id_ruta, numero_ruta, descripcion, tipo, color_hex, sentido
-                FROM ruta
-                WHERE activo = 1
-                  AND (descripcion LIKE :nombre1 OR descripcion LIKE :nombre2)
-                ORDER BY numero_ruta
-            ";
+            if ($hasIdaVuelta) {
+                $sqlRutasNombre = "
+                    SELECT id_ruta, numero_ruta, descripcion, tipo, color_hex, 
+                           color_hex_ida, color_hex_vuelta, puntos_gps_ida, puntos_gps_vuelta, sentido
+                    FROM ruta
+                    WHERE activo = 1
+                      AND (descripcion LIKE :nombre1 OR descripcion LIKE :nombre2)
+                    ORDER BY numero_ruta
+                ";
+            } else {
+                $sqlRutasNombre = "
+                    SELECT id_ruta, numero_ruta, descripcion, tipo, color_hex, sentido
+                    FROM ruta
+                    WHERE activo = 1
+                      AND (descripcion LIKE :nombre1 OR descripcion LIKE :nombre2)
+                    ORDER BY numero_ruta
+                ";
+            }
             $stmtRutas = $pdo->prepare($sqlRutasNombre);
             $stmtRutas->execute([
                 ':nombre1' => "%{$nombreLugar}%",
@@ -75,6 +115,18 @@ try {
         $color = $ruta['color_hex'] ?: '#E74C3C';
         $sentido = $ruta['sentido'] ?? 'NORMAL';
         
+        // Colores de ida/vuelta (si están disponibles)
+        $colorIda = isset($ruta['color_hex_ida']) && !empty($ruta['color_hex_ida'])
+            ? $ruta['color_hex_ida']
+            : $color;
+        $colorVuelta = isset($ruta['color_hex_vuelta']) && !empty($ruta['color_hex_vuelta'])
+            ? $ruta['color_hex_vuelta']
+            : '#2980B9';
+        
+        // Verificar si tiene puntos de ida/vuelta
+        $tieneIda = isset($ruta['puntos_gps_ida']) && !empty(trim($ruta['puntos_gps_ida']));
+        $tieneVuelta = isset($ruta['puntos_gps_vuelta']) && !empty(trim($ruta['puntos_gps_vuelta']));
+        
         // Build name from numero_ruta + tipo or descripcion
         $tipo = $ruta['tipo'] ?? 'minibus';
         $tipoCapitalizado = ucfirst($tipo);
@@ -84,7 +136,7 @@ try {
             $nombreArmado = $ruta['descripcion'] ?? 'Ruta sin nombre';
         }
 
-        $data[] = [
+        $item = [
             'id_ruta' => (int)$ruta['id_ruta'],
             'numero_ruta' => $ruta['numero_ruta'] ?? '',
             'nombre' => $nombreArmado,
@@ -93,6 +145,16 @@ try {
             'color_hex' => $color,
             'sentido' => $sentido,
         ];
+        
+        // Agregar colores de ida/vuelta si están disponibles
+        if ($hasIdaVuelta) {
+            $item['color_hex_ida'] = $colorIda;
+            $item['color_hex_vuelta'] = $colorVuelta;
+            $item['tiene_ida'] = $tieneIda;
+            $item['tiene_vuelta'] = $tieneVuelta;
+        }
+        
+        $data[] = $item;
     }
 
     echo json_encode([
